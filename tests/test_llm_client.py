@@ -35,12 +35,13 @@ class TestRoboguideClientInitialization(unittest.TestCase):
     """Verifies RoboguideClient configuration, model defaults, and API key handling."""
 
     def test_default_configuration(self):
-        """Verifies default model identifier, tool count, and system instruction."""
+        """Verifies default model identifier, tool count, system instruction, and thinking level."""
         client = RoboguideClient(api_key="mock_api_key_test")
         self.assertEqual(client.model, DEFAULT_MODEL)
         self.assertEqual(client.model, "gemini-robotics-er-2-streaming-preview")
         self.assertEqual(len(client.tools), len(DRIVING_TOOLS))
         self.assertEqual(client.system_instruction, ROBOGUIDE_SYSTEM_INSTRUCTION)
+        self.assertEqual(client.thinking_level, "LOW")
 
         tool_names = [func.__name__ for func in client.tools]
         expected_tools = [
@@ -55,6 +56,11 @@ class TestRoboguideClientInitialization(unittest.TestCase):
         ]
         for expected in expected_tools:
             self.assertIn(expected, tool_names)
+
+    def test_custom_thinking_level(self):
+        """Verifies that custom thinking_level can be configured."""
+        client = RoboguideClient(api_key="mock_api_key_test", thinking_level="MEDIUM")
+        self.assertEqual(client.thinking_level, "MEDIUM")
 
     def test_missing_api_key_raises_runtime_error(self):
         """Accessing client without an API key or env var raises a helpful RuntimeError."""
