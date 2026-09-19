@@ -340,7 +340,7 @@ async def move_forward(duration_seconds: float = 1.0) -> Dict[str, Any]:
     return await bridge.execute_motion("FORWARD", duration)
 
 
-async def steer_slight_left(duration_seconds: float = 0.8) -> Dict[str, Any]:
+async def steer_slight_left(duration_seconds: float = 1.0) -> Dict[str, Any]:
     """Gently veers/curves the robot to the left while maintaining forward progress.
 
     Reduces the left wheel effort to 25% while keeping the right wheel at full base speed,
@@ -352,7 +352,7 @@ async def steer_slight_left(duration_seconds: float = 0.8) -> Dict[str, Any]:
 
     Args:
         duration_seconds: The duration in seconds to curve left. Must be between 0.1
-            and 5.0 seconds. Default is 0.8 seconds.
+            and 5.0 seconds. Default is 1.0 second.
 
     Returns:
         A dictionary containing:
@@ -367,7 +367,7 @@ async def steer_slight_left(duration_seconds: float = 0.8) -> Dict[str, Any]:
     return await bridge.execute_motion("SLIGHT_LEFT", duration)
 
 
-async def steer_slight_right(duration_seconds: float = 0.8) -> Dict[str, Any]:
+async def steer_slight_right(duration_seconds: float = 1.0) -> Dict[str, Any]:
     """Gently veers/curves the robot to the right while maintaining forward progress.
 
     Reduces the right wheel effort to 25% while keeping the left wheel at full base speed,
@@ -379,7 +379,7 @@ async def steer_slight_right(duration_seconds: float = 0.8) -> Dict[str, Any]:
 
     Args:
         duration_seconds: The duration in seconds to curve right. Must be between 0.1
-            and 5.0 seconds. Default is 0.8 seconds.
+            and 5.0 seconds. Default is 1.0 second.
 
     Returns:
         A dictionary containing:
@@ -394,19 +394,19 @@ async def steer_slight_right(duration_seconds: float = 0.8) -> Dict[str, Any]:
     return await bridge.execute_motion("SLIGHT_RIGHT", duration)
 
 
-async def turn_hard_left(duration_seconds: float = 0.6) -> Dict[str, Any]:
+async def turn_hard_left(duration_seconds: float = 0.8) -> Dict[str, Any]:
     """Spins/pivots the robot in place to the left (counter-clockwise).
 
     Runs the left wheel in reverse (-0.35 effort) and the right wheel forward (+0.35 effort),
     causing the robot to rotate around its central axis without advancing forward.
-    A duration of approximately 0.5 to 0.7 seconds yields a 90-degree left turn.
+    A duration of approximately 0.7 to 1.0 seconds yields a clean pivot turn.
 
     Use this tool when arriving at a sharp 90-degree corner, navigating T-intersections,
     or turning around to escape a blocked corridor or dead end.
 
     Args:
         duration_seconds: Duration in seconds to pivot turn left. Must be between 0.1
-            and 3.0 seconds. Default is 0.6 seconds (~90 degrees).
+            and 3.0 seconds. Default is 0.8 seconds.
 
     Returns:
         A dictionary containing:
@@ -421,19 +421,19 @@ async def turn_hard_left(duration_seconds: float = 0.6) -> Dict[str, Any]:
     return await bridge.execute_motion("HARD_LEFT", duration)
 
 
-async def turn_hard_right(duration_seconds: float = 0.6) -> Dict[str, Any]:
+async def turn_hard_right(duration_seconds: float = 0.8) -> Dict[str, Any]:
     """Spins/pivots the robot in place to the right (clockwise).
 
     Runs the left wheel forward (+0.35 effort) and the right wheel in reverse (-0.35 effort),
     causing the robot to rotate around its central axis without advancing forward.
-    A duration of approximately 0.5 to 0.7 seconds yields a 90-degree right turn.
+    A duration of approximately 0.7 to 1.0 seconds yields a clean pivot turn.
 
     Use this tool when arriving at a sharp 90-degree corner, navigating T-intersections,
     or turning around to escape a blocked corridor or dead end.
 
     Args:
         duration_seconds: Duration in seconds to pivot turn right. Must be between 0.1
-            and 3.0 seconds. Default is 0.6 seconds (~90 degrees).
+            and 3.0 seconds. Default is 0.8 seconds.
 
     Returns:
         A dictionary containing:

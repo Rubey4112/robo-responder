@@ -81,18 +81,19 @@ class TestHardwareAnalyzeFrameAndNavigate(unittest.IsolatedAsyncioTestCase):
         self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
     async def asyncTearDown(self):
-        # Always issue immediate safety stop after each test to ensure motors halt
+        # Always issue immediate safety stop after each test and settle motors
         if self.bridge.is_connected:
             await self.bridge.execute_motion("STOP", 0.0)
+            await asyncio.sleep(0.3)
 
     async def test_hardware_move_forward_directive(self):
         """Mocks Gemini ER 2 proposing move_forward and verifies hardware execution."""
         mock_call = MagicMock()
         mock_call.name = "move_forward"
-        mock_call.args = {"duration_seconds": 0.2}
+        mock_call.args = {"duration_seconds": 1.0}
 
         mock_response = MagicMock()
-        mock_response.text = "Path to exit is clear. Moving forward."
+        mock_response.text = "Path to exit door is clear. Moving forward."
         mock_response.function_calls = [mock_call]
 
         self.mock_genai_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
@@ -103,7 +104,7 @@ class TestHardwareAnalyzeFrameAndNavigate(unittest.IsolatedAsyncioTestCase):
             execute_tools=True,
         )
 
-        self.assertEqual(result["text"], "Path to exit is clear. Moving forward.")
+        self.assertEqual(result["text"], "Path to exit door is clear. Moving forward.")
         self.assertEqual(len(result["tool_calls"]), 1)
         self.assertEqual(result["tool_calls"][0]["name"], "move_forward")
         self.assertEqual(len(result["tool_results"]), 1)
@@ -142,7 +143,7 @@ class TestHardwareAnalyzeFrameAndNavigate(unittest.IsolatedAsyncioTestCase):
         # Test hard left
         mock_call_left = MagicMock()
         mock_call_left.name = "turn_hard_left"
-        mock_call_left.args = {"duration_seconds": 0.2}
+        mock_call_left.args = {"duration_seconds": 0.8}
 
         self.mock_genai_client.aio.models.generate_content = AsyncMock(
             return_value=MagicMock(text="Turning left", function_calls=[mock_call_left])
@@ -155,7 +156,7 @@ class TestHardwareAnalyzeFrameAndNavigate(unittest.IsolatedAsyncioTestCase):
         # Test hard right
         mock_call_right = MagicMock()
         mock_call_right.name = "turn_hard_right"
-        mock_call_right.args = {"duration_seconds": 0.2}
+        mock_call_right.args = {"duration_seconds": 0.8}
 
         self.mock_genai_client.aio.models.generate_content = AsyncMock(
             return_value=MagicMock(text="Turning right", function_calls=[mock_call_right])
@@ -169,7 +170,7 @@ class TestHardwareAnalyzeFrameAndNavigate(unittest.IsolatedAsyncioTestCase):
         """Tests steer_slight_left and steer_slight_right gentle navigation on hardware."""
         mock_call_curve = MagicMock()
         mock_call_curve.name = "steer_slight_left"
-        mock_call_curve.args = {"duration_seconds": 0.2}
+        mock_call_curve.args = {"duration_seconds": 1.0}
 
         self.mock_genai_client.aio.models.generate_content = AsyncMock(
             return_value=MagicMock(text="Centering in hallway", function_calls=[mock_call_curve])
@@ -225,6 +226,7 @@ class TestHardwareRoboguideLiveSession(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         if self.bridge.is_connected:
             await self.bridge.execute_motion("STOP", 0.0)
+            await asyncio.sleep(0.3)
 
     async def test_send_frame_formats_realtime_input(self):
         """Verifies sending OpenCV BGR frame encodes to JPEG and sends LiveClientRealtimeInput."""
@@ -267,7 +269,7 @@ class TestHardwareRoboguideLiveSession(unittest.IsolatedAsyncioTestCase):
         func_call = MagicMock()
         func_call.id = "call_hw_456"
         func_call.name = "steer_slight_right"
-        func_call.args = {"duration_seconds": 0.2}
+        func_call.args = {"duration_seconds": 1.0}
         msg.tool_call = MagicMock()
         msg.tool_call.function_calls = [func_call]
         msg.tool_call_cancellation = None
@@ -290,7 +292,7 @@ class TestHardwareRoboguideLiveSession(unittest.IsolatedAsyncioTestCase):
         )
 
         await session.start()
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(1.25)
         await session.close()
 
         # Verify callbacks
@@ -351,9 +353,10 @@ class TestDirectHardwareToolExecution(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         if self.bridge.is_connected:
             await self.bridge.execute_motion("STOP", 0.0)
+            await asyncio.sleep(0.3)
 
     async def test_direct_move_forward(self):
-        res = await execute_async_tool("move_forward", {"duration_seconds": 0.2})
+        res = await execute_async_tool("move_forward", {"duration_seconds": 1.0})
         self.assertEqual(res["action"], "FORWARD")
         self.assertIn(res["status"], ("success", "simulated"))
 
