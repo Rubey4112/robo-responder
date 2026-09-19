@@ -1,0 +1,2 @@
+- [] Upload the firmware to the XRP Robot
+- [] Test sending motors command over serials to the XRP Robot
