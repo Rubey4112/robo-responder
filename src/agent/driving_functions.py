@@ -25,6 +25,7 @@ Key Capabilities:
 import asyncio
 from collections import deque
 import logging
+import os
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -102,7 +103,9 @@ class AsyncRobotBridge:
             if self.is_connected and self.ser and self.ser.is_open:
                 return True
 
-            port_to_try = target_port or self.port or detect_xrp_port()
+            detected = detect_xrp_port()
+            env_port = os.environ.get("ROBOT_PORT")
+            port_to_try = target_port or env_port or (self.port if not self.is_simulated else None) or detected
             if not port_to_try:
                 logger.warning(
                     "No XRP robot serial port detected. Running in SIMULATION mode."
