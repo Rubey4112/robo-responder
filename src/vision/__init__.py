@@ -10,6 +10,7 @@ from .directional_positioning import (
     SteeringState,
     run_path_following_preview,
 )
+from ..sensors.webcam_sensor import WebcamSensor, WebcamReading
 
 __all__ = [
     "capture_interactive",
@@ -20,4 +21,6 @@ __all__ = [
     "DetectionMode",
     "SteeringState",
     "run_path_following_preview",
+    "WebcamSensor",
+    "WebcamReading",
 ]
