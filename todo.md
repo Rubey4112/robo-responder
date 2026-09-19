@@ -1,0 +1,5 @@
+- [X] Upload the firmware to the XRP Robot
+- [X] Test sending motors command over serials to the XRP Robot
+- [X] Convert the serial controller to be tools usable by Gemini
+- [] Send the OpenCV images to Gemini ER 2
+- 

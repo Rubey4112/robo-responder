@@ -56,23 +56,43 @@ def execute_command(cmd: str):
 # ==========================================
 # 2. Non-Blocking Serial Listener Loop
 # ==========================================
-print("🚀 XRP MicroPython Navigation Firmware Ready...")
+print("[XRP] MicroPython Navigation Firmware Ready...")
 drivetrain.stop()
 
-# Safety timeout: Stop motors if no new command received in 1.5s
-last_command_time = time.time()
-SAFETY_TIMEOUT_SEC = 1.5
+# Turn RGB LED Blue (R=0, G=0, B=255) to indicate firmware is running
+try:
+    board.set_rgb_led(0, 0, 255)
+except Exception:
+    board.led_on()  # Fallback to monochrome LED if board has no NeoPixel
+
+# Use select.poll() on raw stdin.buffer to prevent Unicode decoding crashes from serial noise
+poll_obj = select.poll()
+poll_obj.register(sys.stdin.buffer, select.POLLIN)
+
+# Safety timeout: Stop motors if no new command received in 1500ms (1.5s)
+SAFETY_TIMEOUT_MS = 1500
+last_command_time = time.ticks_ms()
 
 while True:
-    # Check if USB stdin serial data is available (Non-blocking)
-    if select.select([sys.stdin], [], [], 0.01):
-        line = sys.stdin.readline().strip()
-        if line:
-            execute_command(line)
-            last_command_time = time.time()
+    # Check if USB stdin serial data is available (Non-blocking, 0ms timeout)
+    if poll_obj.poll(0):
+        try:
+            raw_bytes = sys.stdin.buffer.readline()
+            if raw_bytes:
+                try:
+                    line = raw_bytes.decode("utf-8").strip()
+                except UnicodeError:
+                    # Fallback: extract printable ASCII characters if noise occurs
+                    line = "".join(chr(b) for b in raw_bytes if 32 <= b < 127).strip()
 
-    # Safety watchdog check
-    if time.time() - last_command_time > SAFETY_TIMEOUT_SEC:
+                if line:
+                    execute_command(line)
+                    last_command_time = time.ticks_ms()
+        except (UnicodeError, ValueError, Exception):
+            pass
+
+    # Safety watchdog check (time.ticks_diff handles tick rollover safely)
+    if time.ticks_diff(time.ticks_ms(), last_command_time) > SAFETY_TIMEOUT_MS:
         drivetrain.stop()
 
-    time.sleep(0.01)
+    time.sleep_ms(10)
