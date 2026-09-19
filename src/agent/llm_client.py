@@ -290,11 +290,27 @@ class RoboguideClient:
         model: str = DEFAULT_MODEL,
         system_instruction: str = ROBOGUIDE_SYSTEM_INSTRUCTION,
         tools: Optional[List[Callable[..., Any]]] = None,
+        thinking_level: Optional[str] = "LOW",
     ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not self.api_key:
+            env_file = Path(".env")
+            if env_file.exists():
+                try:
+                    for line in env_file.read_text().splitlines():
+                        if "=" in line and not line.strip().startswith("#"):
+                            k, v = line.split("=", 1)
+                            if k.strip() == "GEMINI_API_KEY":
+                                self.api_key = v.strip()
+                                os.environ["GEMINI_API_KEY"] = self.api_key
+                                break
+                except Exception:
+                    pass
+
         self.model = model
         self.system_instruction = system_instruction
         self.tools = tools if tools is not None else DRIVING_TOOLS
+        self.thinking_level = thinking_level
         self._client: Optional[genai.Client] = None
 
         if self.api_key:
@@ -333,9 +349,15 @@ class RoboguideClient:
         Yields:
             RoboguideLiveSession: The managed live session instance.
         """
-        modalities = [types.LiveModality.TEXT]
+        modalities = [types.Modality.TEXT]
         if response_modalities:
-            modalities = [types.LiveModality(m) for m in response_modalities]
+            modalities = [types.Modality(m) for m in response_modalities]
+
+        thinking_config = (
+            types.ThinkingConfig(thinking_level=self.thinking_level)
+            if self.thinking_level
+            else None
+        )
 
         live_config = types.LiveConnectConfig(
             response_modalities=modalities,
@@ -343,9 +365,10 @@ class RoboguideClient:
             system_instruction=types.Content(
                 parts=[types.Part.from_text(text=self.system_instruction)]
             ),
+            thinking_config=thinking_config,
         )
 
-        logger.info(f"Connecting to Gemini Live API with model: '{self.model}'...")
+        logger.info(f"Connecting to Gemini Live API with model: '{self.model}' (thinking_level: {self.thinking_level})...")
         async with self.client.aio.live.connect(model=self.model, config=live_config) as raw_session:
             live_session = RoboguideLiveSession(
                 session=raw_session,
@@ -390,10 +413,17 @@ class RoboguideClient:
         image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
         contents = [prompt, image_part]
 
+        thinking_config = (
+            types.ThinkingConfig(thinking_level=self.thinking_level)
+            if self.thinking_level
+            else None
+        )
+
         config = types.GenerateContentConfig(
             tools=self.tools,
             system_instruction=self.system_instruction,
             temperature=0.2,
+            thinking_config=thinking_config,
         )
 
         try:
@@ -428,6 +458,66 @@ class RoboguideClient:
             logger.error(f"Error in analyze_frame_and_navigate: {e}")
             return {"error": str(e)}
 
+    def start_spatial_chat(self, model: Optional[str] = None):
+        """Creates a continuous multi-turn chat session with spatial memory and automatic tool execution.
+
+        Maintains persistent visual and conversational history across sequential camera frames,
+        allowing Gemini to compare past vs. present observations and plan movements.
+
+        Args:
+            model: Model identifier. Defaults to 'gemini-robotics-er-2-preview'.
+
+        Returns:
+            An AsyncChat session with driving tools and spatial memory.
+        """
+        target_model = model or ("gemini-robotics-er-2-preview" if "er-2" in self.model else self.model)
+        thinking_config = (
+            types.ThinkingConfig(thinking_level=self.thinking_level)
+            if self.thinking_level
+            else None
+        )
+        config = types.GenerateContentConfig(
+            tools=self.tools,
+            system_instruction=self.system_instruction,
+            temperature=0.2,
+            thinking_config=thinking_config,
+        )
+        return self.client.aio.chats.create(model=target_model, config=config)
+
+    async def send_spatial_frame(
+        self,
+        chat_session: Any,
+        frame: Union[np.ndarray, bytes],
+        frame_index: int = 1,
+        instruction: str = "Analyze the current view. Compare your spatial position against previous frames and your previous motor movements. Identify obstacles or exit signs, and execute the appropriate driving action.",
+    ) -> str:
+        """Sends an incremental camera frame to an ongoing spatial chat session.
+
+        Args:
+            chat_session: An active AsyncChat session created via start_spatial_chat().
+            frame: OpenCV BGR frame (np.ndarray) or raw JPEG image bytes.
+            frame_index: Sequential number of the frame (e.g. 1, 2, 3).
+            instruction: Specific guidance or prompt accompanying the frame.
+
+        Returns:
+            The model's natural language reasoning text after automatic tool execution.
+        """
+        if isinstance(frame, np.ndarray):
+            success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not success:
+                raise ValueError("Failed to encode frame to JPEG")
+            image_bytes = encoded.tobytes()
+        else:
+            image_bytes = frame
+
+        prompt = f"Camera Feed [Frame {frame_index}]: {instruction}"
+        contents = [
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            prompt,
+        ]
+        response = await chat_session.send_message(contents)
+        return response.text if hasattr(response, "text") else str(response)
+
 
 # ============================================================================
 # Self-Test and Example Demonstration
@@ -441,6 +531,7 @@ async def _self_test():
 
     client = RoboguideClient()
     print(f"[*] Target Model       : {client.model}")
+    print(f"[*] Thinking Level     : {client.thinking_level}")
     print(f"[*] Driving Tools Count: {len(client.tools)}")
     print(f"[*] Registered Tools   : {[f.__name__ for f in client.tools]}")
 
@@ -475,8 +566,11 @@ async def _self_test():
         config = types.GenerateContentConfig(
             tools=client.tools,
             system_instruction=client.system_instruction,
+            thinking_config=types.ThinkingConfig(thinking_level=client.thinking_level)
+            if client.thinking_level
+            else None,
         )
-        print(f"[OK] GenerateContentConfig successfully verified with {len(config.tools)} tools!")
+        print(f"[OK] GenerateContentConfig successfully verified with {len(config.tools)} tools (thinking_level: {client.thinking_level})!")
 
     print("\n[OK] Client self-test completed successfully.\n")
 

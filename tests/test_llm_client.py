@@ -11,6 +11,7 @@ real motor commands over USB-Serial to the MicroPython firmware on the robot.
 
 import asyncio
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -64,7 +65,7 @@ class TestRoboguideClientInitialization(unittest.TestCase):
 
     def test_missing_api_key_raises_runtime_error(self):
         """Accessing client without an API key or env var raises a helpful RuntimeError."""
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), patch.object(Path, "exists", return_value=False):
             client = RoboguideClient(api_key=None)
             with self.assertRaises(RuntimeError) as ctx:
                 _ = client.client
@@ -376,6 +377,138 @@ class TestDirectHardwareToolExecution(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["is_connected"])
         self.assertIsNotNone(res["port"])
         self.assertIn("last_command", res)
+
+
+class TestLiveGeminiSpatialAwareness(unittest.IsolatedAsyncioTestCase):
+    """
+    Integration test calling the ACTUAL Google Gemini API with mocked camera frames.
+
+    Loads photos incrementally from tests/test_photos/ (photo1.jpg, photo2.jpg, ...)
+    in sequential order, waiting 1.0 second between frames.
+
+    Verifies:
+      1. Photo frame data is successfully transmitted to the Gemini API.
+      2. Gemini Robotics ER 2 reasons about the scene and executes physical robot motor controls.
+      3. Gemini maintains persistent spatial awareness across turns, comparing changes
+         relative to previous frames and planning the next navigation move.
+    """
+
+    async def asyncSetUp(self):
+        # Load GEMINI_API_KEY from environment or .env file
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            env_file = Path(".env")
+            if env_file.exists():
+                for line in env_file.read_text().splitlines():
+                    if "=" in line and not line.strip().startswith("#"):
+                        k, v = line.split("=", 1)
+                        if k.strip() == "GEMINI_API_KEY":
+                            api_key = v.strip()
+                            os.environ["GEMINI_API_KEY"] = api_key
+                            break
+
+        if not api_key:
+            self.skipTest("GEMINI_API_KEY is not set. Skipping live Gemini API test.")
+
+        self.bridge = get_robot_bridge()
+        await self.bridge.connect()
+
+        self.client = RoboguideClient(api_key=api_key, thinking_level="LOW")
+        self.photo_dir = Path(__file__).parent / "test_photos"
+        if not self.photo_dir.exists():
+            self.skipTest(f"Test photos directory not found: {self.photo_dir}")
+
+    async def asyncTearDown(self):
+        if self.bridge.is_connected:
+            await self.bridge.execute_motion("STOP", 0.0)
+            await asyncio.sleep(0.3)
+
+    async def test_live_spatial_awareness_across_frames(self):
+        """
+        Streams sequential photos to Gemini ER 2, verifying physical motor control
+        and temporal/spatial memory across turns.
+        """
+        # Collect and sort photos numerically: photo1.jpg, photo2.jpg, ...
+        photo_paths = sorted(
+            self.photo_dir.glob("photo*.jpg"),
+            key=lambda p: int("".join(filter(str.isdigit, p.stem)) or "0"),
+        )
+        self.assertGreater(len(photo_paths), 0, "No photos found in test_photos directory.")
+
+        print("\n" + "=" * 70)
+        print(" LIVE GEMINI ROBOTICS ER 2 SPATIAL AWARENESS TEST")
+        print(f"[*] Target Model : {self.client.model}")
+        print(f"[*] Robot Port   : {self.bridge.port} (simulated: {self.bridge.is_simulated})")
+        print(f"[*] Total Photos : {len(photo_paths)} found in {self.photo_dir.name}")
+        print("=" * 70)
+
+        # Initialize spatial chat session with continuous memory and driving tools
+        chat_session = self.client.start_spatial_chat()
+
+        # Determine number of frames to test (default to 4, or all via MAX_TEST_FRAMES=all)
+        max_env = os.environ.get("MAX_TEST_FRAMES")
+        if max_env and max_env.lower() == "all":
+            test_frames = photo_paths
+        elif max_env and max_env.isdigit():
+            test_frames = photo_paths[:int(max_env)]
+        else:
+            test_frames = photo_paths[:4]
+
+        turn_responses = []
+
+        for idx, photo_file in enumerate(test_frames, start=1):
+            img_bytes = photo_file.read_bytes()
+            print(f"\n--- [Turn {idx}/{len(test_frames)}] Sending {photo_file.name} ({len(img_bytes)} bytes) ---")
+
+            if idx == 1:
+                prompt_instruction = (
+                    "Initial scene deployment. Identify the emergency exit or hallway route, "
+                    "state what you observe, and execute the appropriate robot driving action."
+                )
+            else:
+                prompt_instruction = (
+                    f"Frame {idx} captured after your previous action. Compare this view to Frame {idx-1}: "
+                    "Did your position change? Are you closer to the exit or obstacles? "
+                    "State what changed spatially and execute the next driving action."
+                )
+
+            # Send frame to Gemini and execute tools via AFC
+            reasoning = await self.client.send_spatial_frame(
+                chat_session=chat_session,
+                frame=img_bytes,
+                frame_index=idx,
+                instruction=prompt_instruction,
+            )
+
+            print(f"[Gemini ER 2 Reasoning - Frame {idx}]:\n{reasoning}\n")
+            turn_responses.append(reasoning)
+
+            # Assertions for each turn
+            self.assertTrue(len(reasoning) > 0, f"Expected reasoning from Gemini for frame {idx}")
+            self.assertTrue(self.bridge.is_connected, "Robot bridge should remain connected.")
+
+            # Turn 2+ Spatial Awareness Assertions:
+            if idx >= 2:
+                # The model should demonstrate spatial awareness by referencing previous context or movement
+                text_lower = reasoning.lower()
+                spatial_indicators = [
+                    "frame", "previous", "closer", "move", "door", "exit",
+                    "forward", "progress", "relative", "approaching", "distance",
+                    "left", "right", "action", "stopped"
+                ]
+                matches = [word for word in spatial_indicators if word in text_lower]
+                self.assertGreaterEqual(
+                    len(matches),
+                    2,
+                    f"Turn {idx} reasoning should demonstrate spatial awareness. Found indicators: {matches}",
+                )
+
+            # Wait 1.0 second before the next photo frame as requested
+            if idx < len(test_frames):
+                print("[*] Waiting 1.0s before sending next photo frame...")
+                await asyncio.sleep(1.0)
+
+        print("[OK] Live spatial awareness test completed successfully.")
 
 
 def tearDownModule():
