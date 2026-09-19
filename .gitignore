@@ -1,0 +1,24 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Image & Data captures
+captures/
+*.jpg
+*.jpeg
+*.png
+
+# Environment variables & secrets
+.env
+*.local
+
+# IDE & Editor configs
+.vscode/
+.idea/
