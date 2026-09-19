@@ -1,0 +1,90 @@
+flowchart TB
+    %% -----------------------------------------------------------
+    %% STYLING AND CONFIGURATION
+    %% -----------------------------------------------------------
+    classDef hardware fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b;
+    classDef vision fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#1b5e20;
+    classDef cloud fill:#ede7f6,stroke:#7b1fa2,stroke-width:2px,color:#4a148c;
+    classDef embedded fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100;
+    classDef bus fill:#eceff1,stroke:#455a64,stroke-width:2px,stroke-dasharray: 5 5,color:#263238;
+
+    %% -----------------------------------------------------------
+    %% ENVIRONMENT & PERCEPTION INPUT
+    %% -----------------------------------------------------------
+    subgraph Env ["Emergency Environment"]
+        PhysicalSpace["Exit Signs, Doors, Obstacles, Hazards (Fire/Debris)"]
+    end
+
+    Cam["USB-C Webcam<br/><i>(1080p Video Stream)</i>"]:::hardware
+    PhysicalSpace -.->|"Optical Light / Scene"| Cam
+
+    %% -----------------------------------------------------------
+    %% RASPBERRY PI 4 HOST (EDGE COMPUTING)
+    %% -----------------------------------------------------------
+    subgraph RPi ["Raspberry Pi 4 Model B (Host SBC - Python 3.11)"]
+        subgraph CVSys ["1. Computer Vision System"]
+            OpenCVMod["OpenCV Module<br/><i>(Frame Capture & Preprocessing)</i>"]:::vision
+            ObstacleDetect["Exit & Hazard Detection<br/><i>(ROI Cropping & Feature Extraction)</i>"]:::vision
+            OpenCVMod -->|"Preprocessed Frames"| ObstacleDetect
+        end
+
+        subgraph HostAgent ["Host Orchestration & Bridge"]
+            AgentLoop["Roboguide Agent Controller<br/><i>(Coordinates Vision, LLM & Robot)</i>"]
+            SerialComm["USB Serial Driver / Interface<br/><i>(Baudrate 115200)</i>"]
+            AgentLoop -->|"Formatted Movement Directives"| SerialComm
+        end
+    end
+
+    Cam -->|"Raw Video Stream (USB)"| OpenCVMod
+    ObstacleDetect -->|"Scene Images + Context"| AgentLoop
+
+    %% -----------------------------------------------------------
+    %% CLOUD INTELLIGENCE
+    %% -----------------------------------------------------------
+    subgraph CloudSystem ["2. LLM System (Cloud Reasoning)"]
+        GeminiAPI["Google Gemini API<br/><b>Robotics ER 2</b>"]:::cloud
+        PathPlanner["Emergency Path Planning & Spatial Reasoning"]:::cloud
+        FunctionCallEngine["Function Call Generator<br/><i>(FORWARD, SLIGHT_LEFT, HARD_RIGHT, STOP)</i>"]:::cloud
+
+        GeminiAPI --> PathPlanner
+        PathPlanner --> FunctionCallEngine
+    end
+
+    AgentLoop <-->|"HTTPS / REST / WebSockets<br/>Image Payloads & Telemetry"| GeminiAPI
+    FunctionCallEngine -->|"Action Directives & Function Calls"| AgentLoop
+
+    %% -----------------------------------------------------------
+    %% COMMUNICATION BUS
+    %% -----------------------------------------------------------
+    subgraph CommBus ["Communication Bus"]
+        USBSerial["Bi-directional USB Serial Connection<br/><i>(Host RPi 4 ⇄ RP2040 Pi Pico)</i>"]:::bus
+    end
+
+    SerialComm <-->|"Serial Data Stream<br/>(Directives / Telemetry / Firmware Updates)"| USBSerial
+
+    %% -----------------------------------------------------------
+    %% ROBOT CONTROL SYSTEM (XRP ROBOTICS KIT)
+    %% -----------------------------------------------------------
+    subgraph RobotSystem ["3. Robot Control System (XRP Kit - Pi Pico)"]
+        subgraph Firmware ["Pi Pico MicroPython Firmware"]
+            SerialListener["Non-blocking Serial Listener<br/><code>sys.stdin / select</code>"]:::embedded
+            Watchdog["Safety Watchdog Timer<br/><i>(1.5s Auto-Stop Timeout)</i>"]:::embedded
+            CommandExec["Command Dispatcher<br/><code>execute_command()</code>"]:::embedded
+            XRPLibCore["XRPLib Driver Framework<br/><code>DifferentialDrive</code>"]:::embedded
+
+            SerialListener -->|"Parsed Command String"| CommandExec
+            Watchdog -.->|"Safety Trigger"| CommandExec
+            CommandExec -->|"Motor Effort / Speed"| XRPLibCore
+        end
+
+        subgraph HardwareActuators ["Hardware & Actuators"]
+            Motors["Dual Geared DC Motors<br/><i>(Left & Right Differential Drive)</i>"]:::hardware
+            Sensors["XRP Onboard Sensors<br/><i>(Encoders, Ultrasonic, Line Trackers)</i>"]:::hardware
+        end
+
+        XRPLibCore -->|"PWM / Effort Control"| Motors
+        Sensors -.->|"Sensor Readings & Diagnostics"| SerialListener
+    end
+
+    USBSerial <-->|"USB stdin / stdout"| SerialListener
+    Motors -.->|"Guides Evacuees to Safety"| PhysicalSpace

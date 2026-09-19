@@ -1,0 +1,94 @@
+from machine import Pin
+import sys
+"""
+A simple file for shutting off all of the motors after a program gets interrupted from the REPL.
+Run this file after interrupting a program to stop the robot by running "import XRPLib.resetbot" in the REPL.
+"""
+
+def reset_motors():
+    from XRPLib.encoded_motor import EncodedMotor
+
+    number_of_motors = 3
+    if hasattr(Pin.board, "MOTOR_4_IN_1"):
+        number_of_motors = 4
+
+    # using the EncodedMotor since the default drivetrain uses the IMU and takes 3 seconds to init
+    for i in range(number_of_motors):
+        motor = EncodedMotor.get_default_encoded_motor(i+1)
+        motor.set_speed(0)
+        motor.reset_encoder_position()
+
+def reset_led():
+    from XRPLib.board import Board
+    # Turn off the on-board LED
+    Board.get_default_board().led_off()
+    try:
+        # Turn off the RGB LED for boards that have it
+        Board.get_default_board().set_rgb_led(0, 0, 0)
+    except:
+        pass
+
+def reset_buzzer():
+    # Turn off the buzzer, buzzer code is only loaded with the Nano board, so we need to put it in the try/except block
+    try:
+        from XRPLib.buzzer import Buzzer
+        # Turn off the Buzzer if the board has one
+        Buzzer.get_default_buzzer().reset_buzzer()
+    except:
+        pass
+
+def reset_servos():
+    from XRPLib.servo import Servo
+    # Turn off both Servos
+    Servo.get_default_servo(1).free()
+    Servo.get_default_servo(2).free()
+    try: #if 2350 then there are 4 servos
+        Servo.get_default_servo(3).free()
+        Servo.get_default_servo(4).free()
+    except:
+        pass
+
+def reset_webserver():
+    from XRPLib.webserver import Webserver
+    # Shut off the webserver and close network connections
+    Webserver.get_default_webserver().stop_server()
+
+def reset_gamepad():
+    from XRPLib.gamepad import Gamepad
+    # Stop the browser from sending more gamepad data
+    Gamepad.get_default_gamepad().stop()
+
+def reset_dashboard():
+    from XRPLib.dashboard import Dashboard
+    # Stop the dashboard from sending more data
+    Dashboard.get_default_dashboard().stop()
+
+def reset_hard():
+    reset_gamepad()
+    reset_dashboard()
+    reset_motors()
+    reset_led()
+    reset_buzzer()
+    reset_servos()
+    reset_webserver()
+
+if "XRPLib.gamepad" in sys.modules:
+    reset_gamepad()
+
+if "XRPLib.dashboard" in sys.modules:
+    reset_dashboard()
+
+if "XRPLib.encoded_motor" in sys.modules:
+    reset_motors()
+
+if "XRPLib.board" in sys.modules:
+    reset_led()
+
+if hasattr(Pin.board, "BOARD_BUZZER"):
+    reset_buzzer()
+
+if "XRPLib.servo" in sys.modules:
+    reset_servos()
+
+if "XRPLib.webserver" in sys.modules:
+    reset_webserver()
