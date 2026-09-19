@@ -20,6 +20,13 @@ from .driving_functions import (
     get_robot_status,
 )
 
+from .llm_client import (
+    RoboguideClient,
+    RoboguideLiveSession,
+    ROBOGUIDE_SYSTEM_INSTRUCTION,
+    DEFAULT_MODEL,
+)
+
 __all__ = [
     "DRIVING_TOOLS",
     "TOOL_MAP",
@@ -34,4 +41,8 @@ __all__ = [
     "stop_robot",
     "stop_for_obstacle",
     "get_robot_status",
+    "RoboguideClient",
+    "RoboguideLiveSession",
+    "ROBOGUIDE_SYSTEM_INSTRUCTION",
+    "DEFAULT_MODEL",
 ]
