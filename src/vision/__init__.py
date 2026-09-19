@@ -10,6 +10,18 @@ from .directional_positioning import (
     SteeringState,
     run_path_following_preview,
 )
+from .gemini_live import (
+    GeminiRoboticsLiveClient,
+    GeminiLiveEvent,
+    RobotDirective,
+    DEFAULT_MODEL as GEMINI_ROBOTICS_MODEL,
+)
+from .websocket_streamer import VisionWebSocketServer, InboundCommand
+from .stream_pipeline import (
+    VisionStreamPipeline,
+    StreamPipelineConfig,
+    run_vision_stream,
+)
 from ..sensors.webcam_sensor import WebcamSensor, WebcamReading
 
 __all__ = [
@@ -23,4 +35,13 @@ __all__ = [
     "run_path_following_preview",
     "WebcamSensor",
     "WebcamReading",
+    "GeminiRoboticsLiveClient",
+    "GeminiLiveEvent",
+    "RobotDirective",
+    "GEMINI_ROBOTICS_MODEL",
+    "VisionWebSocketServer",
+    "InboundCommand",
+    "VisionStreamPipeline",
+    "StreamPipelineConfig",
+    "run_vision_stream",
 ]

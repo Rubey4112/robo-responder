@@ -22,10 +22,12 @@ flowchart TB
     %% RASPBERRY PI 4 HOST (EDGE COMPUTING)
     %% -----------------------------------------------------------
     subgraph RPi ["Raspberry Pi 4 Model B (Host SBC - Python 3.11)"]
-        subgraph CVSys ["1. Computer Vision System"]
-            OpenCVMod["OpenCV Module<br/><i>(Frame Capture & Preprocessing)</i>"]:::vision
-            ObstacleDetect["Exit & Hazard Detection<br/><i>(ROI Cropping & Feature Extraction)</i>"]:::vision
-            OpenCVMod -->|"Preprocessed Frames"| ObstacleDetect
+        subgraph CVSys ["1. Computer Vision & Streaming System"]
+            OpenCVMod["OpenCV Capture Module<br/><i>(Frame Capture & Preprocessing)</i>"]:::vision
+            StreamPipeline["Vision Stream Pipeline<br/><i>(Decoupled 30 FPS / 1 FPS Engine)</i>"]:::vision
+            WebSocketServer["Vision WebSocket Server<br/><code>ws://0.0.0.0:8765</code><br/><i>(Video & Telemetry Broadcast)</i>"]:::vision
+            OpenCVMod -->|"30 FPS Camera Frames"| StreamPipeline
+            StreamPipeline -->|"Live Video Broadcast"| WebSocketServer
         end
 
         subgraph HostAgent ["Host Orchestration & Bridge"]
@@ -36,22 +38,28 @@ flowchart TB
     end
 
     Cam -->|"Raw Video Stream (USB)"| OpenCVMod
-    ObstacleDetect -->|"Scene Images + Context"| AgentLoop
+    StreamPipeline -->|"Scene Frames & Directives"| AgentLoop
 
     %% -----------------------------------------------------------
-    %% CLOUD INTELLIGENCE
+    %% REMOTE MONITORS & WEB DASHBOARD
     %% -----------------------------------------------------------
-    subgraph CloudSystem ["2. LLM System (Cloud Reasoning)"]
-        GeminiAPI["Google Gemini API<br/><b>Robotics ER 2</b>"]:::cloud
+    RemoteClient["Remote Dashboard / Web Client<br/><i>(HTML5 Canvas / Live Telemetry)</i>"]:::hardware
+    WebSocketServer <-->|"WebSocket (JSON / Base64 JPEG Frames)"| RemoteClient
+
+    %% -----------------------------------------------------------
+    %% CLOUD INTELLIGENCE (GEMINI ROBOTICS ER-2 LIVE API)
+    %% -----------------------------------------------------------
+    subgraph CloudSystem ["2. LLM System (Cloud Embodied Reasoning)"]
+        GeminiAPI["Google Gemini Live API<br/><b>gemini-robotics-er-2-streaming-preview</b>"]:::cloud
         PathPlanner["Emergency Path Planning & Spatial Reasoning"]:::cloud
-        FunctionCallEngine["Function Call Generator<br/><i>(FORWARD, SLIGHT_LEFT, HARD_RIGHT, STOP)</i>"]:::cloud
+        FunctionCallEngine["Blocking Function Calling Engine<br/><i>(navigate_robot, emergency_stop, report_status)</i>"]:::cloud
 
         GeminiAPI --> PathPlanner
         PathPlanner --> FunctionCallEngine
     end
 
-    AgentLoop <-->|"HTTPS / REST / WebSockets<br/>Image Payloads & Telemetry"| GeminiAPI
-    FunctionCallEngine -->|"Action Directives & Function Calls"| AgentLoop
+    StreamPipeline <-->|"Bidirectional Live WebSocket<br/>1 FPS Video Blobs & Heartbeat Prompts"| GeminiAPI
+    FunctionCallEngine -->|"Blocking Action Directives"| StreamPipeline
 
     %% -----------------------------------------------------------
     %% COMMUNICATION BUS
