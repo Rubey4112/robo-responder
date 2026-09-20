@@ -16,7 +16,7 @@ An embodied AI robotics platform powered by **Google Gemini 3.8 Live** for real-
 
 | Front Perspective | Top / Electronics View | Side Profile |
 | :---: | :---: | :---: |
-| ![RoboResponder Front](photos/IMG_8185.jpg) | ![RoboResponder Top](photos/IMG_8186.jpg) | ![RoboResponder Profile](photos/IMG_8187.jpg) |
+| ![RoboResponder Front](photos/robot_front.jpg) | ![RoboResponder Top](photos/robot_top.jpg) | ![RoboResponder Profile](photos/robot_profile.jpg) |
 
 ---
 
