@@ -13,36 +13,36 @@ drivetrain = DifferentialDrive.get_default_differential_drive()
 # Optional: Set up physical UART pins if not using USB-Serial
 # uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
 
-# Default movement effort speed (-1.0 to 1.0)
-BASE_SPEED = 0.5
-TURN_SPEED = 0.35
+# Default movement speed in Centimeters per Second (cm/s)
+BASE_SPEED = 30.0  # cm/s
+TURN_SPEED = 20.0  # cm/s
 
 def execute_command(cmd: str):
     """
-    Translates high-level steering directives into XRPLib motor efforts.
+    Translates high-level steering directives into XRPLib closed-loop motor speeds (cm/s).
     """
     cmd = cmd.strip().upper()
     print(f"XRP Received Command: {cmd}")
 
     if cmd == "FORWARD":
-        # Both wheels forward
-        drivetrain.set_effort(BASE_SPEED, BASE_SPEED)
+        # Both wheels forward at 15 cm/s
+        drivetrain.set_speed(BASE_SPEED, BASE_SPEED)
 
     elif cmd == "SLIGHT_LEFT":
         # Slow left wheel, keep right wheel moving
-        drivetrain.set_effort(BASE_SPEED * 0.25, BASE_SPEED)
+        drivetrain.set_speed(BASE_SPEED * 0.25, BASE_SPEED)
 
     elif cmd == "SLIGHT_RIGHT":
         # Keep left wheel moving, slow right wheel
-        drivetrain.set_effort(BASE_SPEED, BASE_SPEED * 0.25)
+        drivetrain.set_speed(BASE_SPEED, BASE_SPEED * 0.25)
 
     elif cmd == "HARD_LEFT":
         # Spin in place to the left
-        drivetrain.set_effort(-TURN_SPEED, TURN_SPEED)
+        drivetrain.set_speed(-TURN_SPEED, TURN_SPEED)
 
     elif cmd == "HARD_RIGHT":
         # Spin in place to the right
-        drivetrain.set_effort(TURN_SPEED, -TURN_SPEED)
+        drivetrain.set_speed(TURN_SPEED, -TURN_SPEED)
 
     elif cmd == "STOP_OBSTACLE" or cmd == "STOP":
         # Emergency stop
