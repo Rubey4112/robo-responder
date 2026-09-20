@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 
-def open_camera(camera_index: int = 0) -> cv2.VideoCapture:
+def open_camera(camera_index: int = 1) -> cv2.VideoCapture:
     """
     Initializes and opens the camera capture device.
     Uses DirectShow (CAP_DSHOW) on Windows for fast startup, falling back to default.
@@ -39,7 +39,7 @@ def open_camera(camera_index: int = 0) -> cv2.VideoCapture:
 
 def capture_single_photo(
     output_path: Optional[str] = None,
-    camera_index: int = 0,
+    camera_index: int = 1,
     warmup_frames: int = 5,
     jpeg_quality: int = 95,
 ) -> Optional[str]:
@@ -107,7 +107,7 @@ def capture_single_photo(
 
 def capture_interactive(
     output_dir: str = "captures",
-    camera_index: int = 0,
+    camera_index: int = 1,
     width: Optional[int] = None,
     height: Optional[int] = None,
     jpeg_quality: int = 95,
@@ -231,7 +231,7 @@ def capture_interval(
     interval_seconds: float = 2.0,
     max_photos: int = 10,
     output_dir: str = "captures/dataset",
-    camera_index: int = 0,
+    camera_index: int = 1,
     jpeg_quality: int = 95,
 ) -> None:
     """
