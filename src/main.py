@@ -56,8 +56,14 @@ from src.agent.driving_functions import (
     get_robot_bridge,
 )
 from src.agent.llm_client import (
+    EMERGENCY_SYSTEM_INSTRUCTIONS,
     ROBOGUIDE_SYSTEM_INSTRUCTION,
     RoboguideClient,
+)
+from src.audio.live_audio import (
+    AudioPlayer,
+    RoboguideLiveAudioSession,
+    get_audio_session,
 )
 
 # Configure logger
@@ -92,28 +98,30 @@ if hasattr(sys.stderr, "reconfigure"):
 # Rich Terminal Telemetry Formatters
 # ============================================================================
 
-def print_banner(model: str, port: str, is_simulated: bool, camera_idx: int, mode: str):
+def print_banner(model: str, audio_model: str, port: str, is_simulated: bool, camera_idx: int, mode: str, hazard: str, state: str):
     """Displays the executive hackathon header banner."""
     hw_status = f"{C_YELLOW}SIMULATION (No Hardware){C_RESET}" if is_simulated else f"{C_GREEN}{port} (Connected){C_RESET}"
     banner = f"""
 {C_CYAN}{C_BOLD}+==============================================================================+
-|                   ROBOGUIDE: AUTONOMOUS EVACUATION ROVER                     |
-|         Powered by Google Gemini Robotics ER 2 & Physical XRP Hardware        |
+|             ROBOGUIDE: DUAL-AGENT AUTONOMOUS EVACUATION ROVER                |
+|      Powered by Gemini 3.8 Live (Audio) & Gemini Robotics ER 2 (Spatial)      |
 +==============================================================================+{C_RESET}
-  {C_BOLD}[*] Target AI Model  :{C_RESET} {C_MAGENTA}{model}{C_RESET}
-  {C_BOLD}[*] XRP Rover Bus    :{C_RESET} {hw_status}
-  {C_BOLD}[*] Live Camera Feed :{C_RESET} {C_WHITE}Device {camera_idx} (DirectShow / OpenCV){C_RESET}
-  {C_BOLD}[*] Operational Mode :{C_RESET} {C_YELLOW}{mode.upper()}{C_RESET}
-  {C_BOLD}[*] Demo Controls    :{C_RESET} {C_WHITE}[SPACE] Next Step | [S] Emergency STOP | [Q] Safe Exit{C_RESET}
+  {C_BOLD}[*] Spatial Reasoning Model :{C_RESET} {C_MAGENTA}{model}{C_RESET}
+  {C_BOLD}[*] Live Audio Voice Model  :{C_RESET} {C_CYAN}{audio_model}{C_RESET}
+  {C_BOLD}[*] XRP Rover Hardware Bus  :{C_RESET} {hw_status}
+  {C_BOLD}[*] Live Camera Optical Feed:{C_RESET} {C_WHITE}Device {camera_idx} (DirectShow / OpenCV){C_RESET}
+  {C_BOLD}[*] Initial System State    :{C_RESET} {C_YELLOW}{state.upper()}{C_RESET} | {C_BOLD}Active Protocol:{C_RESET} {C_GREEN}{hazard.upper()}{C_RESET}
+  {C_BOLD}[*] Operational Mode        :{C_RESET} {C_YELLOW}{mode.upper()}{C_RESET}
+  {C_BOLD}[*] Demo Stage Controls     :{C_RESET} {C_WHITE}[E] Emergency Triage | [SPACE] Step | [S] STOP | [Q] Exit{C_RESET}
 {C_CYAN}--------------------------------------------------------------------------------{C_RESET}
 """
     print(banner)
 
 
-def print_turn_start(turn: int, max_turns: int):
+def print_turn_start(turn: int, max_turns: int, hazard: str):
     """Prints turn start telemetry."""
     turns_info = f"{turn}/{max_turns}" if max_turns > 0 else f"{turn}"
-    print(f"\n{C_BLUE}{C_BOLD}============================== [TURN {turns_info}] =============================={C_RESET}")
+    print(f"\n{C_BLUE}{C_BOLD}==================== [TURN {turns_info} - PROTOCOL: {hazard.upper()}] ===================={C_RESET}")
     print(f"{C_CYAN}[CAMERA]{C_RESET} Flushing optical sensor buffer and capturing fresh environment frame...")
 
 
@@ -153,6 +161,9 @@ def render_hud(
     evacuee_text: str,
     port: str,
     is_simulated: bool,
+    hazard: str = "fire",
+    state: str = "EVACUATION",
+    motion_count: int = 0,
 ) -> np.ndarray:
     """
     Renders a broadcast-quality semi-transparent HUD overlay on top of the
@@ -162,7 +173,7 @@ def render_hud(
     h, w = hud.shape[:2]
 
     # 1. Semi-transparent Top Header Bar
-    top_bar_height = 64
+    top_bar_height = 68
     top_overlay = hud[0:top_bar_height, 0:w].copy()
     cv2.rectangle(top_overlay, (0, 0), (w, top_bar_height), (20, 20, 25), -1)
     hud[0:top_bar_height, 0:w] = cv2.addWeighted(top_overlay, 0.75, hud[0:top_bar_height, 0:w], 0.25, 0)
@@ -170,24 +181,24 @@ def render_hud(
     # Title & Subtitle
     cv2.putText(
         hud,
-        "ROBOGUIDE  |  GEMINI ROBOTICS ER 2 EVACUATION ROVER",
-        (16, 24),
+        "ROBOGUIDE  |  DUAL-AGENT AI EVACUATION ROVER (LIVE AUDIO + ER 2)",
+        (16, 22),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.58,
+        0.52,
         (0, 235, 255),  # Cyan
         1,
         cv2.LINE_AA,
     )
 
-    hw_label = f"ROBOT: {port} (LIVE)" if not is_simulated else "ROBOT: SIMULATED"
-    hw_color = (0, 255, 120) if not is_simulated else (0, 180, 255)
+    hw_label = f"ROBOT: {port}" if not is_simulated else "ROBOT: SIMULATED"
+    state_color = (0, 255, 120) if state == "EVACUATION" else (0, 220, 255)
     cv2.putText(
         hud,
-        f"TURN #{turn}   |   {hw_label}   |   STATUS: {status_text}",
+        f"STATE: {state}  |  HAZARD: {hazard.upper()}  |  {hw_label}  |  STATUS: {status_text}",
         (16, 48),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
-        hw_color,
+        0.42,
+        state_color,
         1,
         cv2.LINE_AA,
     )
@@ -202,10 +213,10 @@ def render_hud(
     # Motor Action Line
     cv2.putText(
         hud,
-        f"COMMAND: {last_action}",
+        f"ACTION: {last_action}   |   MOTIONS: {motion_count}",
         (16, y_start + 24),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.55,
+        0.52,
         (0, 255, 255),  # Yellow
         1,
         cv2.LINE_AA,
@@ -217,7 +228,7 @@ def render_hud(
         display_directive += "..."
     cv2.putText(
         hud,
-        f"DIRECTIVE: \"{display_directive}\"",
+        f"VOICE: \"{display_directive}\"",
         (16, y_start + 50),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -303,8 +314,9 @@ class VisionSensor:
 
 class RoboguideDemoApp:
     """
-    Master coordination loop for the Roboguide autonomous demonstration.
-    Connects camera vision, Gemini spatial chat, and XRP motor bridge.
+    Master coordination loop for the Roboguide dual-agent autonomous demonstration:
+      - Gemini 3.8 Live (`gemini-3.8-live`): Spoken conversation, triage, and evacuee voice updates.
+      - Gemini Robotics ER 2 (`gemini-robotics-er-2-preview`): Camera spatial reasoning and XRP motor driving.
     """
 
     def __init__(
@@ -316,8 +328,11 @@ class RoboguideDemoApp:
         headless: bool = False,
         save_dir: str = "captures/demo",
         model: str = "gemini-robotics-er-2-preview",
+        audio_model: str = "gemini-3.8-live",
         thinking_level: str = "LOW",
         max_retained_frames: int = 4,
+        hazard: str = "prompt",
+        start_idle: bool = True,
     ):
         self.camera_index = camera_index
         self.mode = mode.lower()
@@ -326,8 +341,17 @@ class RoboguideDemoApp:
         self.headless = headless
         self.save_dir = Path(save_dir)
         self.model = model
+        self.audio_model = audio_model
         self.thinking_level = thinking_level
         self.max_retained_frames = max_retained_frames
+
+        # Dual-Agent State Machine
+        self.state: str = "IDLE" if start_idle else "EVACUATION"
+        self.hazard: str = hazard if hazard != "prompt" else "fire"
+        self.audio_session: RoboguideLiveAudioSession = get_audio_session()
+
+        self.motion_count: int = 0
+        self.next_voice_motion_threshold: int = 3
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.bridge = get_robot_bridge()
@@ -338,20 +362,23 @@ class RoboguideDemoApp:
         self.running = False
         self.turn_count = 0
         self.last_action_desc = "STANDBY"
-        self.last_evacuee_text = "System initialized. Preparing to navigate."
+        self.last_evacuee_text = "System in standby. Press [E] to trigger emergency."
         self.window_name = "Roboguide - Live Hackathon Demo (Press Q to Exit)"
 
-        # Intercept bridge movements for live telemetry reporting
+        # Intercept bridge movements for live telemetry reporting and motion counting
         self._setup_hardware_interceptor()
 
     def _setup_hardware_interceptor(self):
-        """Wraps bridge.execute_motion to feed live HUD status and terminal logs."""
+        """Wraps bridge.execute_motion to feed live HUD status, count motions, and trigger voice."""
         orig_execute = self.bridge.execute_motion
 
         async def intercepted_execute_motion(cmd: str, duration_seconds: float = 0.0) -> Dict[str, Any]:
             cmd_upper = cmd.strip().upper()
             dur_str = f"{duration_seconds:.1f}s" if duration_seconds > 0 else "instant"
             self.last_action_desc = f"{cmd_upper} ({dur_str})"
+
+            if cmd_upper not in ("STOP", "STOP_OBSTACLE", "INITIAL_STATE", "NONE"):
+                self.motion_count += 1
 
             print_action_executed(
                 action_name=cmd_upper,
@@ -365,7 +392,7 @@ class RoboguideDemoApp:
         self.bridge.execute_motion = intercepted_execute_motion
 
     async def initialize(self) -> bool:
-        """Connects to hardware, camera, and sets up Gemini spatial chat."""
+        """Connects to hardware, camera, audio, and sets up initial telemetry."""
         # 1. Connect XRP Robot
         await self.bridge.connect()
 
@@ -381,7 +408,9 @@ class RoboguideDemoApp:
                 model=self.model,
                 thinking_level=self.thinking_level,
             )
-            self.chat_session = self.client.start_spatial_chat(model=self.model)
+            self.chat_session = self.client.start_spatial_chat(
+                model=self.model, hazard_type=self.hazard
+            )
         except Exception as e:
             print(f"{C_RED}[ERROR] Failed to initialize Gemini client: {e}{C_RESET}")
             return False
@@ -389,15 +418,18 @@ class RoboguideDemoApp:
         # 4. Display Welcome Telemetry
         print_banner(
             model=self.model,
+            audio_model=self.audio_model,
             port=self.bridge.port or "COM4",
             is_simulated=self.bridge.is_simulated,
             camera_idx=self.vision.camera_index,
             mode=self.mode,
+            hazard=self.hazard,
+            state=self.state,
         )
         return True
 
     def _handle_gui_events(self, frame: np.ndarray, status: str) -> Optional[str]:
-        """Renders HUD frame and processes keypresses. Returns 'exit', 'step', 'stop', or None."""
+        """Renders HUD frame and processes keypresses."""
         if self.headless:
             return None
 
@@ -409,6 +441,9 @@ class RoboguideDemoApp:
             evacuee_text=self.last_evacuee_text,
             port=self.bridge.port or "COM4",
             is_simulated=self.bridge.is_simulated,
+            hazard=self.hazard,
+            state=self.state,
+            motion_count=self.motion_count,
         )
         cv2.imshow(self.window_name, hud_frame)
         key = cv2.waitKey(20) & 0xFF
@@ -417,21 +452,75 @@ class RoboguideDemoApp:
             return "exit"
         elif key in (ord("s"), ord("S")):  # Emergency stop
             return "stop"
+        elif key in (ord("e"), ord("E")):  # Emergency triage trigger
+            return "emergency"
+        elif key == ord("1"):
+            return "1"
+        elif key == ord("2"):
+            return "2"
+        elif key == ord("3"):
+            return "3"
         elif key == 32:  # SPACE bar
             return "step"
         return None
 
+    async def trigger_emergency_triage(self):
+        """Conducts spoken emergency triage via Gemini 3.8 Live."""
+        print(f"\n{C_YELLOW}{C_BOLD}[EMERGENCY TRIAGE ACTIVATED]{C_RESET}")
+        self.state = "TRIAGE"
+        self.last_action_desc = "TRIAGE IN PROGRESS"
+
+        # 1. Gemini 3.8 Live asks what the emergency is
+        triage_question = await self.audio_session.ask_emergency_triage()
+        self.last_evacuee_text = triage_question
+        print(f"{C_CYAN}[ROBOGUIDE VOICE (Gemini 3.8 Live)]:{C_RESET} \"{triage_question}\"")
+        print(f"  {C_BOLD}Options:{C_RESET} [1] Fire  |  [2] Earthquake  |  [3] Tornado")
+
+        # 2. Capture user selection (GUI keypress or console input)
+        user_choice = ""
+        if self.headless:
+            user_choice = await asyncio.to_thread(input, ">>> State Emergency [1: Fire, 2: Earthquake, 3: Tornado]: ")
+        else:
+            print("  >>> Press [1], [2], or [3] in the video window (or type in console) >>>")
+            start_wait = time.time()
+            while self.running and not user_choice and (time.time() - start_wait) < 12.0:
+                ret, frame = self.vision.get_fresh_frame(flush_buffers=1)
+                if ret and frame is not None:
+                    event = self._handle_gui_events(frame, status="WAITING USER RESPONSE (1:Fire, 2:Quake, 3:Tornado)")
+                    if event in ("1", "2", "3"):
+                        user_choice = event
+                        break
+                    elif event == "exit":
+                        self.running = False
+                        return
+                    elif event == "stop":
+                        await self.bridge.execute_motion("STOP", 0.0)
+                await asyncio.sleep(0.04)
+
+            if not user_choice and self.running:
+                user_choice = self.hazard or "fire"
+
+        # 3. Process emergency response with Gemini 3.8 Live
+        print(f"{C_GREEN}[PROCESSING TRIAGE]:{C_RESET} User declared: '{user_choice}'")
+        self.hazard = await self.audio_session.process_emergency_response(user_choice)
+        print(f"{C_MAGENTA}[ACTIVATED PROTOCOL]:{C_RESET} {C_BOLD}{self.hazard.upper()}{C_RESET}")
+
+        # 4. Initialize Gemini Robotics ER 2 spatial session with this specific hazard
+        self.chat_session = self.client.start_spatial_chat(model=self.model, hazard_type=self.hazard)
+        self.state = "EVACUATION"
+        self.next_voice_motion_threshold = self.motion_count + 3
+
     async def run_turn(self, turn_idx: int) -> bool:
         """
-        Executes a complete sense-plan-act turn:
+        Executes a complete sense-plan-act turn for the active hazard:
           1. Grabs fresh frame from camera
           2. Renders HUD & saves frame
-          3. Prompts Gemini ER 2 with spatial reasoning context
+          3. Prompts Gemini ER 2 with hazard-specific spatial reasoning
           4. Automatically executes invoked motor tools on XRP hardware
-          5. Logs reasoning and updates guidance announcement
+          5. Checks periodic voice updates via Gemini 3.8 Live (every 3-4 moves)
         """
         self.turn_count = turn_idx
-        print_turn_start(turn_idx, self.max_turns)
+        print_turn_start(turn_idx, self.max_turns, self.hazard)
 
         # 1. Capture fresh camera frame
         ret, frame = self.vision.get_fresh_frame(flush_buffers=4)
@@ -441,34 +530,46 @@ class RoboguideDemoApp:
 
         # 2. Save capture to disk for post-run audit & judge review
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = self.save_dir / f"turn_{turn_idx:03d}_{timestamp_str}.jpg"
+        save_path = self.save_dir / f"turn_{turn_idx:03d}_{self.hazard}_{timestamp_str}.jpg"
         cv2.imwrite(str(save_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         print(f"  {C_CYAN}[SAVED]{C_RESET} Frame archived: {save_path.name} ({frame.shape[1]}x{frame.shape[0]})")
 
         # 3. Update GUI HUD with REASONING state
-        event = self._handle_gui_events(frame, status="ANALYZING SCENE...")
+        event = self._handle_gui_events(frame, status=f"ANALYZING SCENE ({self.hazard.upper()})...")
         if event == "exit":
             return False
         elif event == "stop":
             await self.bridge.execute_motion("STOP", 0.0)
 
-        # 4. Construct prompt enforcing spatial awareness across turns
+        # 4. Formulate prompt tailored to active hazard
+        if self.hazard == "earthquake":
+            hazard_guidance = (
+                "EARTHQUAKE PROTOCOL: Look for sturdy tables, heavy desks, or structural cover. "
+                "Steer toward cover and call stop_robot() once adjacent so evacuees can take cover underneath. "
+                "Avoid glass windows, mirrors, and overhead light fixtures."
+            )
+        elif self.hazard == "tornado":
+            hazard_guidance = (
+                "TORNADO PROTOCOL: Look for interior hallways and windowless rooms. "
+                "Steer into deep interior corridors. Avoid exterior walls, glass windows, and tipping shelves."
+            )
+        else:
+            hazard_guidance = (
+                "FIRE PROTOCOL: Look for illuminated EXIT signs, double exit doors, and clear corridors. "
+                "Steer toward the exit door and avoid smoke or flames."
+            )
+
         if turn_idx == 1:
             instruction = (
-                "You are Roboguide at initial deployment. Inspect the camera view: "
-                "Identify any emergency exit signs ('EXIT', green signs), exit doors, open corridors, "
-                "or obstacles. State what you observe, declare your chosen navigation move, and call the "
-                "appropriate driving tool (e.g. move_forward, steer_slight_left, turn_hard_right, stop_robot) "
-                "to guide evacuees to safety."
+                f"You are Roboguide responding to a {self.hazard.upper()} emergency. {hazard_guidance} "
+                "Inspect the camera view, state what you observe, declare your chosen move, and call the "
+                "appropriate driving tool (move_forward, steer_slight_left, turn_hard_right, stop_robot) to guide evacuees."
             )
         else:
             instruction = (
-                f"Camera Feed [Turn {turn_idx}]. You just completed action: {self.last_action_desc}. "
-                "SPATIAL MEMORY COMPARISON: Compare this view with your previous observation: "
-                "1. Did your position or heading change? "
-                "2. Are you closer to the exit, doorway, or obstacle? "
-                "3. Is the route directly ahead clear? "
-                "State your spatial reasoning, tell the evacuees what to do, and call the next driving tool."
+                f"Camera Feed [Turn {turn_idx}]. Action completed: {self.last_action_desc}. {hazard_guidance} "
+                "SPATIAL MEMORY: Compare this view with previous frames: Did your position or heading change? "
+                "Is your route clear or blocked? State your spatial reasoning and call the next driving tool."
             )
 
         print_gemini_start()
@@ -490,7 +591,19 @@ class RoboguideDemoApp:
         self.last_evacuee_text = reasoning.strip()
         print_gemini_decision(reasoning, self.last_action_desc)
 
-        # 7. Update HUD with completed state
+        # 7. Check periodic voice reassurance (every 3-4 movements)
+        if self.motion_count >= self.next_voice_motion_threshold:
+            print(f"\n{C_CYAN}{C_BOLD}[GEMINI 3.8 LIVE AUDIO]{C_RESET} Broadcasting spoken update to evacuees (Motion #{self.motion_count})...")
+            asyncio.create_task(
+                self.audio_session.announce_spatial_progress(
+                    current_action=self.last_action_desc,
+                    spatial_reasoning=reasoning,
+                    motion_count=self.motion_count,
+                )
+            )
+            self.next_voice_motion_threshold = self.motion_count + 3
+
+        # 8. Update HUD with completed state
         event = self._handle_gui_events(frame, status=f"ACTIVE: {self.last_action_desc}")
         if event == "exit":
             return False
@@ -498,12 +611,34 @@ class RoboguideDemoApp:
         return True
 
     async def run(self):
-        """Main operational execution loop."""
+        """Main operational execution loop with State Machine."""
         self.running = True
         turn = 1
 
         try:
-            while self.running:
+            # Phase 1: If starting in IDLE, run standby loop waiting for trigger
+            if self.state == "IDLE":
+                print(f"\n{C_YELLOW}[SYSTEM IDLE]{C_RESET} Robot parked in standby. Press {C_BOLD}[E]{C_RESET} or {C_BOLD}[SPACE]{C_RESET} in GUI (or [ENTER] in console) to trigger emergency triage...")
+                if self.headless:
+                    await asyncio.to_thread(input, ">>> Press ENTER to trigger Emergency Mode >>> ")
+                    await self.trigger_emergency_triage()
+                else:
+                    while self.running and self.state == "IDLE":
+                        ret, frame = self.vision.get_fresh_frame(flush_buffers=1)
+                        if ret and frame is not None:
+                            event = self._handle_gui_events(frame, status="STANDBY: PRESS [E] OR [SPACE] TO TRIGGER")
+                            if event in ("emergency", "step"):
+                                await self.trigger_emergency_triage()
+                                break
+                            elif event == "exit":
+                                self.running = False
+                                return
+                            elif event == "stop":
+                                await self.bridge.execute_motion("STOP", 0.0)
+                        await asyncio.sleep(0.03)
+
+            # Phase 2: Active Evacuation Loop
+            while self.running and self.state == "EVACUATION":
                 if self.max_turns > 0 and turn > self.max_turns:
                     print(f"\n{C_GREEN}[COMPLETED] Reached requested turn limit ({self.max_turns}).{C_RESET}")
                     break
@@ -517,7 +652,6 @@ class RoboguideDemoApp:
                 if self.mode == "step":
                     print(f"\n{C_YELLOW}[STEP MODE]{C_RESET} Turn {turn} finished. Press {C_BOLD}[SPACE]{C_RESET} in GUI or {C_BOLD}[ENTER]{C_RESET} in console for next turn (or [Q] to quit)...")
                     if self.headless:
-                        # Wait for console input in thread
                         await asyncio.to_thread(input, ">>> Press ENTER to continue >>> ")
                     else:
                         waiting_step = True
@@ -525,7 +659,7 @@ class RoboguideDemoApp:
                             ret, preview_frame = self.vision.get_fresh_frame(flush_buffers=1)
                             if ret and preview_frame is not None:
                                 ev = self._handle_gui_events(preview_frame, status="WAITING [SPACE]")
-                                if ev == "step":
+                                if ev in ("step", "emergency"):
                                     waiting_step = False
                                 elif ev == "exit":
                                     self.running = False
@@ -558,19 +692,19 @@ class RoboguideDemoApp:
         """Guarantees physical rover motors are halted and all resources freed."""
         print(f"\n{C_CYAN}[SHUTDOWN] Safely cutting motor power and releasing resources...{C_RESET}")
         try:
+            self.audio_session.player.stop()
             if self.bridge.is_connected:
-                # Emergency zero-duration STOP
                 await self.bridge.execute_motion("STOP", 0.0)
                 await asyncio.sleep(0.3)
                 await self.bridge.disconnect()
         except Exception as e:
-            logger.error(f"Error during bridge disconnect: {e}")
+            logger.error(f"Error during shutdown: {e}")
 
         self.vision.release()
         if not self.headless:
             cv2.destroyAllWindows()
 
-        print(f"{C_GREEN}{C_BOLD}[OK] Roboguide shutdown safely completed. Total turns executed: {self.turn_count}.{C_RESET}\n")
+        print(f"{C_GREEN}{C_BOLD}[OK] Roboguide shutdown safely completed. Total turns: {self.turn_count}, Total motions: {self.motion_count}.{C_RESET}\n")
 
 
 # ============================================================================
@@ -579,7 +713,7 @@ class RoboguideDemoApp:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Roboguide: Autonomous Emergency Evacuation Rover (Gemini ER 2 + XRP Hardware)",
+        description="Roboguide: Dual-Agent Autonomous Evacuation Rover (Gemini 3.8 Live + Gemini Robotics ER 2)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -593,6 +727,17 @@ def parse_arguments() -> argparse.Namespace:
         choices=["auto", "step"],
         default="auto",
         help="Navigation loop mode: 'auto' runs continuously; 'step' pauses each turn for judge inspection",
+    )
+    parser.add_argument(
+        "--hazard",
+        choices=["prompt", "fire", "earthquake", "tornado"],
+        default="prompt",
+        help="Emergency hazard type ('prompt' launches interactive voice triage)",
+    )
+    parser.add_argument(
+        "--no-idle",
+        action="store_true",
+        help="Skip IDLE standby and launch evacuation immediately",
     )
     parser.add_argument(
         "--interval",
@@ -621,7 +766,13 @@ def parse_arguments() -> argparse.Namespace:
         "--model",
         type=str,
         default="gemini-robotics-er-2-preview",
-        help="Gemini Robotics model name",
+        help="Gemini Robotics spatial model name",
+    )
+    parser.add_argument(
+        "--audio-model",
+        type=str,
+        default="gemini-3.8-live",
+        help="Gemini Live audio model name",
     )
     parser.add_argument(
         "--thinking-level",
@@ -648,8 +799,11 @@ async def main():
         headless=args.headless,
         save_dir=args.save_dir,
         model=args.model,
+        audio_model=args.audio_model,
         thinking_level=args.thinking_level,
         max_retained_frames=args.max_retained_frames,
+        hazard=args.hazard,
+        start_idle=not args.no_idle,
     )
 
     initialized = await app.initialize()
