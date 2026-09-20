@@ -14,12 +14,15 @@ Key Capabilities:
 """
 
 import asyncio
+import io
+import json
 import logging
 import os
 from pathlib import Path
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import wave
 
 import numpy as np
 
@@ -44,6 +47,7 @@ from google.genai import types
 logger = logging.getLogger("RoboguideAudio")
 
 ROBOGUIDE_LIVE_AUDIO_MODEL = "gemini-3.8-live"
+DEFAULT_VOICE_NAME = "Aoede"  # Consistent persona: "Aoede", "Puck", "Charon", "Kore", "Fenrir"
 
 ROBOGUIDE_AUDIO_SYSTEM_INSTRUCTION = """You are the reassuring, calm, and authoritative voice of Roboguide, an autonomous robotic emergency evacuation responder.
 You communicate directly with humans caught in extreme building emergencies (fires, earthquakes, tornadoes) to guide them safely.
@@ -154,6 +158,7 @@ class RoboguideLiveAudioSession:
         self,
         api_key: Optional[str] = None,
         model: str = ROBOGUIDE_LIVE_AUDIO_MODEL,
+        voice_name: str = DEFAULT_VOICE_NAME,
         system_instruction: str = ROBOGUIDE_AUDIO_SYSTEM_INSTRUCTION,
     ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -167,6 +172,7 @@ class RoboguideLiveAudioSession:
                         break
 
         self.model = model
+        self.voice_name = voice_name
         self.system_instruction = system_instruction
         self.player = AudioPlayer(sample_rate=24000)
         self.offline_tts = OfflineTTSPlayer()
@@ -191,10 +197,17 @@ class RoboguideLiveAudioSession:
     async def generate_speech_audio(self, prompt_text: str) -> bytes:
         """
         Sends a prompt to `gemini-3.8-live` and streams back the generated 24kHz PCM audio.
-        Falls back gracefully to offline TTS if needed.
+        Uses a consistent prebuilt voice (e.g. Aoede) across all invocations.
         """
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=self.voice_name
+                    )
+                )
+            ),
             system_instruction=types.Content(
                 parts=[types.Part.from_text(text=self.system_instruction)]
             ),
@@ -225,8 +238,6 @@ class RoboguideLiveAudioSession:
 
         except Exception as e:
             logger.warning(f"Live audio generation via {self.model} encountered an issue: {e}. Using offline voice fallback.")
-            # Trigger offline speech fallback
-            asyncio.create_task(self.offline_tts.speak_async(prompt_text))
             return b""
 
     async def speak(self, directive_text: str, wait: bool = False):
@@ -245,6 +256,98 @@ class RoboguideLiveAudioSession:
             # Fallback was triggered
             if wait:
                 await self.offline_tts.speak_async(directive_text)
+            else:
+                asyncio.create_task(self.offline_tts.speak_async(directive_text))
+
+    def start_recording(self, duration: float = 4.0, sample_rate: int = 16000) -> Optional[np.ndarray]:
+        """
+        Starts non-blocking background microphone recording using sounddevice.
+        Returns numpy array buffer being populated asynchronously by sounddevice.
+        """
+        if not HAS_SOUNDDEVICE:
+            return None
+        try:
+            return sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype="int16")
+        except Exception as e:
+            logger.error(f"Failed to start sounddevice microphone recording: {e}")
+            return None
+
+    def stop_recording(self):
+        """Immediately stops sounddevice recording."""
+        if HAS_SOUNDDEVICE:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+
+    async def classify_audio_samples(
+        self,
+        audio_samples: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> Tuple[str, str]:
+        """
+        Takes raw int16 microphone audio samples, encodes them as in-memory WAV,
+        and uses Gemini to transcribe the speech and classify the emergency hazard.
+
+        Returns:
+            Tuple[str, str]: (emergency_type, transcript)
+            where emergency_type is one of: 'fire', 'earthquake', 'tornado', or 'unknown'.
+        """
+        if audio_samples is None or len(audio_samples) == 0:
+            return "unknown", ""
+
+        max_amp = float(np.max(np.abs(audio_samples)))
+        if max_amp < 600:
+            logger.info(f"Audio below vocal energy threshold (max amp: {max_amp:.0f}). Treating as silence.")
+            return "unknown", ""
+
+        # Encode int16 audio array to in-memory WAV bytes
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_samples.tobytes())
+        wav_bytes = buf.getvalue()
+
+        audio_part = types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav")
+        prompt = (
+            "You are an emergency triage classifier for an autonomous evacuation rover. "
+            "Listen carefully to this audio recording of a person answering what emergency has occurred. "
+            "Classify which emergency they declared: 'fire', 'earthquake', or 'tornado'. "
+            "If they spoke words related to earthquake (e.g. earthquake, quake, shaking, trembling), classify as 'earthquake'. "
+            "If they spoke words related to fire (e.g. fire, burning, smoke, flames), classify as 'fire'. "
+            "If they spoke words related to tornado (e.g. tornado, twister, storm, cyclone, wind), classify as 'tornado'. "
+            "If the recording is silent, static, or unintelligible noise, classify as 'unknown'. "
+            "Return JSON: {\"emergency\": \"fire\" | \"earthquake\" | \"tornado\" | \"unknown\", \"transcript\": \"<exact words spoken>\"}"
+        )
+
+        try:
+            resp = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=[audio_part, prompt],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            raw_json = resp.text.strip() if resp.text else "{}"
+            parsed = json.loads(raw_json)
+            emergency = str(parsed.get("emergency", "unknown")).lower().strip()
+            transcript = str(parsed.get("transcript", "")).strip()
+
+            clean_t = transcript.lower()
+            if emergency not in ("fire", "earthquake", "tornado"):
+                if any(w in clean_t for w in ("earthquake", "quake", "shake", "shaking")):
+                    emergency = "earthquake"
+                elif any(w in clean_t for w in ("tornado", "storm", "twister", "cyclone", "wind")):
+                    emergency = "tornado"
+                elif any(w in clean_t for w in ("fire", "smoke", "flame", "burning")):
+                    emergency = "fire"
+
+            logger.info(f"Vocal triage classification: emergency='{emergency}', transcript='{transcript}'")
+            return emergency, transcript
+        except Exception as e:
+            logger.error(f"Error classifying vocal audio with Gemini: {e}")
+            return "unknown", ""
 
     async def ask_emergency_triage(self) -> str:
         """
@@ -303,11 +406,19 @@ class RoboguideLiveAudioSession:
 # Global singleton helper
 _global_audio_session: Optional[RoboguideLiveAudioSession] = None
 
-def get_audio_session() -> RoboguideLiveAudioSession:
+def get_audio_session(
+    api_key: Optional[str] = None,
+    model: str = ROBOGUIDE_LIVE_AUDIO_MODEL,
+    voice_name: str = DEFAULT_VOICE_NAME,
+) -> RoboguideLiveAudioSession:
     """Returns the singleton RoboguideLiveAudioSession instance."""
     global _global_audio_session
     if _global_audio_session is None:
-        _global_audio_session = RoboguideLiveAudioSession()
+        _global_audio_session = RoboguideLiveAudioSession(
+            api_key=api_key,
+            model=model,
+            voice_name=voice_name,
+        )
     return _global_audio_session
 
 

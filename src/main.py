@@ -112,7 +112,7 @@ def print_banner(model: str, audio_model: str, port: str, is_simulated: bool, ca
   {C_BOLD}[*] Live Camera Optical Feed:{C_RESET} {C_WHITE}Device {camera_idx} (DirectShow / OpenCV){C_RESET}
   {C_BOLD}[*] Initial System State    :{C_RESET} {C_YELLOW}{state.upper()}{C_RESET} | {C_BOLD}Active Protocol:{C_RESET} {C_GREEN}{hazard.upper()}{C_RESET}
   {C_BOLD}[*] Operational Mode        :{C_RESET} {C_YELLOW}{mode.upper()}{C_RESET}
-  {C_BOLD}[*] Demo Stage Controls     :{C_RESET} {C_WHITE}[E] Emergency Triage | [SPACE] Step | [S] STOP | [Q] Exit{C_RESET}
+  {C_BOLD}[*] Demo Stage Controls     :{C_RESET} {C_WHITE}[E] Emergency Triage | [S] RESET TO STANDBY | [SPACE] Step | [Q] Exit{C_RESET}
 {C_CYAN}--------------------------------------------------------------------------------{C_RESET}
 """
     print(banner)
@@ -204,7 +204,7 @@ def render_hud(
     )
 
     # 2. Semi-transparent Bottom Action Banner
-    bottom_bar_height = 68
+    bottom_bar_height = 84
     y_start = h - bottom_bar_height
     bottom_overlay = hud[y_start:h, 0:w].copy()
     cv2.rectangle(bottom_overlay, (0, 0), (w, bottom_bar_height), (15, 18, 28), -1)
@@ -214,25 +214,37 @@ def render_hud(
     cv2.putText(
         hud,
         f"ACTION: {last_action}   |   MOTIONS: {motion_count}",
-        (16, y_start + 24),
+        (16, y_start + 22),
         cv2.FONT_HERSHEY_DUPLEX,
-        0.52,
+        0.50,
         (0, 255, 255),  # Yellow
         1,
         cv2.LINE_AA,
     )
 
     # Evacuee Guidance Line (truncated to fit)
-    display_directive = evacuee_text.replace("\n", " ")[:85]
-    if len(evacuee_text) > 85:
+    display_directive = evacuee_text.replace("\n", " ")[:80]
+    if len(evacuee_text) > 80:
         display_directive += "..."
     cv2.putText(
         hud,
         f"VOICE: \"{display_directive}\"",
-        (16, y_start + 50),
+        (16, y_start + 46),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
+        0.40,
         (230, 230, 230),  # Crisp White
+        1,
+        cv2.LINE_AA,
+    )
+
+    # Demo Stage Control Hints
+    cv2.putText(
+        hud,
+        "DEMO KEYS: [E] Triage | [S] RESET TO STANDBY | [SPACE] Step | [Q] Exit",
+        (16, y_start + 70),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.38,
+        (0, 215, 255),  # Amber / Cyan
         1,
         cv2.LINE_AA,
     )
@@ -329,6 +341,7 @@ class RoboguideDemoApp:
         save_dir: str = "captures/demo",
         model: str = "gemini-robotics-er-2-preview",
         audio_model: str = "gemini-3.8-live",
+        voice_name: str = "Aoede",
         thinking_level: str = "LOW",
         max_retained_frames: int = 4,
         hazard: str = "prompt",
@@ -342,13 +355,14 @@ class RoboguideDemoApp:
         self.save_dir = Path(save_dir)
         self.model = model
         self.audio_model = audio_model
+        self.voice_name = voice_name
         self.thinking_level = thinking_level
         self.max_retained_frames = max_retained_frames
 
         # Dual-Agent State Machine
         self.state: str = "IDLE" if start_idle else "EVACUATION"
         self.hazard: str = hazard if hazard != "prompt" else "fire"
-        self.audio_session: RoboguideLiveAudioSession = get_audio_session()
+        self.audio_session: RoboguideLiveAudioSession = get_audio_session(voice_name=self.voice_name)
 
         self.motion_count: int = 0
         self.next_voice_motion_threshold: int = 3
@@ -465,50 +479,115 @@ class RoboguideDemoApp:
         return None
 
     async def trigger_emergency_triage(self):
-        """Conducts spoken emergency triage via Gemini 3.8 Live."""
+        """Conducts spoken emergency triage via Gemini 3.8 Live and captures spoken user response."""
         print(f"\n{C_YELLOW}{C_BOLD}[EMERGENCY TRIAGE ACTIVATED]{C_RESET}")
         self.state = "TRIAGE"
         self.last_action_desc = "TRIAGE IN PROGRESS"
 
-        # 1. Gemini 3.8 Live asks what the emergency is
+        # 1. Gemini 3.8 Live asks what the emergency is aloud (waits until playback completes)
         triage_question = await self.audio_session.ask_emergency_triage()
         self.last_evacuee_text = triage_question
         print(f"{C_CYAN}[ROBOGUIDE VOICE (Gemini 3.8 Live)]:{C_RESET} \"{triage_question}\"")
-        print(f"  {C_BOLD}Options:{C_RESET} [1] Fire  |  [2] Earthquake  |  [3] Tornado")
+        print(f"  {C_BOLD}Voice Input :{C_RESET} Speak your emergency clearly into the microphone (e.g. 'Earthquake!', 'Fire!', 'Tornado!')")
+        print(f"  {C_BOLD}Manual Keys :{C_RESET} [1] Fire  |  [2] Earthquake  |  [3] Tornado")
 
-        # 2. Capture user selection (GUI keypress or console input)
+        # 2. Record audio from microphone while keeping OpenCV GUI alive & listening for manual keypresses
         user_choice = ""
-        if self.headless:
-            user_choice = await asyncio.to_thread(input, ">>> State Emergency [1: Fire, 2: Earthquake, 3: Tornado]: ")
-        else:
-            print("  >>> Press [1], [2], or [3] in the video window (or type in console) >>>")
-            start_wait = time.time()
-            while self.running and not user_choice and (time.time() - start_wait) < 12.0:
+        rec_duration = 4.0
+        sample_rate = 16000
+
+        audio_buffer = self.audio_session.start_recording(duration=rec_duration, sample_rate=sample_rate)
+
+        start_time = time.time()
+        print(f"{C_GREEN}[MIC ACTIVE - LISTENING]{C_RESET} Listening for your voice ({rec_duration:.0f}s window)... Speak now!")
+
+        while self.running and not user_choice and (time.time() - start_time) < rec_duration:
+            elapsed = time.time() - start_time
+            remaining = max(0.0, rec_duration - elapsed)
+            if not self.headless:
                 ret, frame = self.vision.get_fresh_frame(flush_buffers=1)
                 if ret and frame is not None:
-                    event = self._handle_gui_events(frame, status="WAITING USER RESPONSE (1:Fire, 2:Quake, 3:Tornado)")
+                    event = self._handle_gui_events(
+                        frame,
+                        status=f"LISTENING TO VOICE ({remaining:.1f}s)... Speak 'Earthquake', 'Fire', or 'Tornado'",
+                    )
                     if event in ("1", "2", "3"):
                         user_choice = event
+                        self.audio_session.stop_recording()
                         break
                     elif event == "exit":
                         self.running = False
+                        self.audio_session.stop_recording()
                         return
                     elif event == "stop":
-                        await self.bridge.execute_motion("STOP", 0.0)
-                await asyncio.sleep(0.04)
+                        await self.reset_to_idle()
+                        return
+            await asyncio.sleep(0.04)
 
-            if not user_choice and self.running:
-                user_choice = self.hazard or "fire"
+        # 3. If manual key was not pressed, analyze the recorded microphone audio with Gemini
+        if not user_choice and self.running and audio_buffer is not None:
+            # Wait for sounddevice buffer to finish settling
+            try:
+                import sounddevice as sd
+                sd.wait()
+            except Exception:
+                pass
 
-        # 3. Process emergency response with Gemini 3.8 Live
-        print(f"{C_GREEN}[PROCESSING TRIAGE]:{C_RESET} User declared: '{user_choice}'")
+            print(f"{C_CYAN}[ANALYZING USER VOICE]{C_RESET} Sending microphone audio to Gemini for speech recognition...")
+            detected_hazard, transcript = await self.audio_session.classify_audio_samples(
+                audio_buffer, sample_rate=sample_rate
+            )
+            if transcript:
+                print(f"{C_WHITE}[SPEECH TRANSCRIBED]:{C_RESET} \"{transcript}\"")
+            if detected_hazard in ("fire", "earthquake", "tornado"):
+                user_choice = detected_hazard
+                print(f"{C_GREEN}[VOICE RECOGNITION CONFIRMED]:{C_RESET} Detected hazard -> {C_BOLD}{user_choice.upper()}{C_RESET}")
+            else:
+                print(f"{C_YELLOW}[VOICE UNRECOGNIZED / AMBIENT]:{C_RESET} No clear emergency keyword detected in audio.")
+
+        # Fallback if neither voice nor keypress was captured
+        if not user_choice and self.running:
+            user_choice = self.hazard or "fire"
+
+        # 4. Process emergency response with Gemini 3.8 Live (vocalizes directive with consistent voice)
+        print(f"{C_GREEN}[PROCESSING TRIAGE]:{C_RESET} Confirmed emergency: '{user_choice}'")
         self.hazard = await self.audio_session.process_emergency_response(user_choice)
         print(f"{C_MAGENTA}[ACTIVATED PROTOCOL]:{C_RESET} {C_BOLD}{self.hazard.upper()}{C_RESET}")
 
-        # 4. Initialize Gemini Robotics ER 2 spatial session with this specific hazard
+        # 5. Initialize Gemini Robotics ER 2 spatial session with this specific hazard
         self.chat_session = self.client.start_spatial_chat(model=self.model, hazard_type=self.hazard)
         self.state = "EVACUATION"
         self.next_voice_motion_threshold = self.motion_count + 3
+
+    async def reset_to_idle(self):
+        """
+        Emergency reset switch: cuts motor power, halts audio,
+        and parks robot back in IDLE standby for judge demonstrations.
+        """
+        print(f"\n{C_RED}{C_BOLD}[RESET SWITCH TRIGGERED - [S] KEY]{C_RESET}")
+        print(f"  {C_YELLOW}>>> Halting robot motors and clearing emergency protocol...{C_RESET}")
+
+        # 1. Stop audio playback and microphone recording
+        self.audio_session.player.stop()
+        self.audio_session.stop_recording()
+
+        # 2. Halt physical robot motors immediately
+        try:
+            if self.bridge.is_connected:
+                await self.bridge.execute_motion("STOP", 0.0)
+        except Exception as e:
+            logger.warning(f"Error cutting motor power during reset: {e}")
+
+        # 3. Reset internal telemetry & state machine
+        self.state = "IDLE"
+        self.turn_count = 0
+        self.motion_count = 0
+        self.last_action_desc = "RESET / STANDBY"
+        self.last_evacuee_text = "Emergency reset. Robot parked in standby. Press [E] to trigger."
+        self.chat_session = None
+
+        print(f"{C_GREEN}{C_BOLD}[OK] Robot successfully reset to IDLE standby.{C_RESET}")
+        print(f"  {C_CYAN}Ready for next demo run. Press [E] or [SPACE] in GUI to trigger triage.{C_RESET}\n")
 
     async def run_turn(self, turn_idx: int) -> bool:
         """
@@ -539,7 +618,8 @@ class RoboguideDemoApp:
         if event == "exit":
             return False
         elif event == "stop":
-            await self.bridge.execute_motion("STOP", 0.0)
+            await self.reset_to_idle()
+            return False
 
         # 4. Formulate prompt tailored to active hazard
         if self.hazard == "earthquake":
@@ -607,81 +687,100 @@ class RoboguideDemoApp:
         event = self._handle_gui_events(frame, status=f"ACTIVE: {self.last_action_desc}")
         if event == "exit":
             return False
+        elif event == "stop":
+            await self.reset_to_idle()
+            return False
 
         return True
 
     async def run(self):
-        """Main operational execution loop with State Machine."""
+        """Main operational execution loop with State Machine & Demo Reset Switch."""
         self.running = True
-        turn = 1
 
         try:
-            # Phase 1: If starting in IDLE, run standby loop waiting for trigger
-            if self.state == "IDLE":
-                print(f"\n{C_YELLOW}[SYSTEM IDLE]{C_RESET} Robot parked in standby. Press {C_BOLD}[E]{C_RESET} or {C_BOLD}[SPACE]{C_RESET} in GUI (or [ENTER] in console) to trigger emergency triage...")
-                if self.headless:
-                    await asyncio.to_thread(input, ">>> Press ENTER to trigger Emergency Mode >>> ")
-                    await self.trigger_emergency_triage()
-                else:
-                    while self.running and self.state == "IDLE":
-                        ret, frame = self.vision.get_fresh_frame(flush_buffers=1)
-                        if ret and frame is not None:
-                            event = self._handle_gui_events(frame, status="STANDBY: PRESS [E] OR [SPACE] TO TRIGGER")
-                            if event in ("emergency", "step"):
-                                await self.trigger_emergency_triage()
+            while self.running:
+                # Phase 1: If starting in IDLE, run standby loop waiting for trigger
+                if self.state == "IDLE":
+                    print(f"\n{C_YELLOW}[SYSTEM IDLE]{C_RESET} Robot parked in standby. Press {C_BOLD}[E]{C_RESET} or {C_BOLD}[SPACE]{C_RESET} in GUI (or [ENTER] in console) to trigger emergency triage...")
+                    if self.headless:
+                        user_cmd = await asyncio.to_thread(input, ">>> Press ENTER to trigger Emergency Mode (or 'q' to quit) >>> ")
+                        if user_cmd.strip().lower() in ("q", "quit", "exit"):
+                            self.running = False
+                            return
+                        await self.trigger_emergency_triage()
+                    else:
+                        while self.running and self.state == "IDLE":
+                            ret, frame = self.vision.get_fresh_frame(flush_buffers=1)
+                            if ret and frame is not None:
+                                event = self._handle_gui_events(frame, status="STANDBY: PRESS [E] OR [SPACE] TO TRIGGER")
+                                if event in ("emergency", "step"):
+                                    await self.trigger_emergency_triage()
+                                    break
+                                elif event == "exit":
+                                    self.running = False
+                                    return
+                                elif event == "stop":
+                                    await self.reset_to_idle()
+                            await asyncio.sleep(0.03)
+
+                # Phase 2: Active Evacuation Loop
+                turn = 1
+                while self.running and self.state == "EVACUATION":
+                    if self.max_turns > 0 and turn > self.max_turns:
+                        print(f"\n{C_GREEN}[COMPLETED] Reached requested turn limit ({self.max_turns}). Resetting to IDLE.{C_RESET}")
+                        await self.reset_to_idle()
+                        break
+
+                    # Execute one full navigation turn
+                    success = await self.run_turn(turn)
+                    if not success or self.state != "EVACUATION":
+                        break
+
+                    # Step vs Auto Mode Handling
+                    if self.mode == "step":
+                        print(f"\n{C_YELLOW}[STEP MODE]{C_RESET} Turn {turn} finished. Press {C_BOLD}[SPACE]{C_RESET} next turn | {C_BOLD}[S]{C_RESET} reset to idle | {C_BOLD}[Q]{C_RESET} quit...")
+                        if self.headless:
+                            cmd_in = await asyncio.to_thread(input, ">>> Press ENTER to continue ([s] to reset, [q] to quit) >>> ")
+                            if cmd_in.strip().lower() in ("s", "reset"):
+                                await self.reset_to_idle()
                                 break
-                            elif event == "exit":
+                            elif cmd_in.strip().lower() in ("q", "quit", "exit"):
                                 self.running = False
                                 return
-                            elif event == "stop":
-                                await self.bridge.execute_motion("STOP", 0.0)
-                        await asyncio.sleep(0.03)
-
-            # Phase 2: Active Evacuation Loop
-            while self.running and self.state == "EVACUATION":
-                if self.max_turns > 0 and turn > self.max_turns:
-                    print(f"\n{C_GREEN}[COMPLETED] Reached requested turn limit ({self.max_turns}).{C_RESET}")
-                    break
-
-                # Execute one full navigation turn
-                success = await self.run_turn(turn)
-                if not success:
-                    break
-
-                # Step vs Auto Mode Handling
-                if self.mode == "step":
-                    print(f"\n{C_YELLOW}[STEP MODE]{C_RESET} Turn {turn} finished. Press {C_BOLD}[SPACE]{C_RESET} in GUI or {C_BOLD}[ENTER]{C_RESET} in console for next turn (or [Q] to quit)...")
-                    if self.headless:
-                        await asyncio.to_thread(input, ">>> Press ENTER to continue >>> ")
+                        else:
+                            waiting_step = True
+                            while waiting_step and self.running and self.state == "EVACUATION":
+                                ret, preview_frame = self.vision.get_fresh_frame(flush_buffers=1)
+                                if ret and preview_frame is not None:
+                                    ev = self._handle_gui_events(preview_frame, status="WAITING [SPACE] (OR [S] RESET)")
+                                    if ev in ("step", "emergency"):
+                                        waiting_step = False
+                                    elif ev == "exit":
+                                        self.running = False
+                                        return
+                                    elif ev == "stop":
+                                        await self.reset_to_idle()
+                                        waiting_step = False
+                                        break
+                                await asyncio.sleep(0.03)
                     else:
-                        waiting_step = True
-                        while waiting_step and self.running:
-                            ret, preview_frame = self.vision.get_fresh_frame(flush_buffers=1)
-                            if ret and preview_frame is not None:
-                                ev = self._handle_gui_events(preview_frame, status="WAITING [SPACE]")
-                                if ev in ("step", "emergency"):
-                                    waiting_step = False
-                                elif ev == "exit":
-                                    self.running = False
-                                elif ev == "stop":
-                                    await self.bridge.execute_motion("STOP", 0.0)
-                            await asyncio.sleep(0.03)
-                else:
-                    # Auto mode: settle camera and wait interval
-                    print(f"{C_CYAN}[SETTLING]{C_RESET} Waiting {self.interval:.1f}s for rover motion to settle before next observation...")
-                    start_wait = time.time()
-                    while (time.time() - start_wait) < self.interval and self.running:
-                        if not self.headless:
-                            ret, preview_frame = self.vision.get_fresh_frame(flush_buffers=1)
-                            if ret and preview_frame is not None:
-                                ev = self._handle_gui_events(preview_frame, status=f"SETTLING ({self.interval:.1f}s)")
-                                if ev == "exit":
-                                    self.running = False
-                                elif ev == "stop":
-                                    await self.bridge.execute_motion("STOP", 0.0)
-                        await asyncio.sleep(0.05)
+                        # Auto mode: settle camera and wait interval
+                        print(f"{C_CYAN}[SETTLING]{C_RESET} Waiting {self.interval:.1f}s for rover motion to settle (Press [S] to Reset)...")
+                        start_wait = time.time()
+                        while (time.time() - start_wait) < self.interval and self.running and self.state == "EVACUATION":
+                            if not self.headless:
+                                ret, preview_frame = self.vision.get_fresh_frame(flush_buffers=1)
+                                if ret and preview_frame is not None:
+                                    ev = self._handle_gui_events(preview_frame, status=f"SETTLING ({self.interval:.1f}s) | [S] RESET")
+                                    if ev == "exit":
+                                        self.running = False
+                                        return
+                                    elif ev == "stop":
+                                        await self.reset_to_idle()
+                                        break
+                            await asyncio.sleep(0.05)
 
-                turn += 1
+                    turn += 1
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             print(f"\n{C_YELLOW}[INTERRUPT] Received user interrupt signal (Ctrl+C).{C_RESET}")
@@ -775,6 +874,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Gemini Live audio model name",
     )
     parser.add_argument(
+        "--voice-name",
+        choices=["Aoede", "Puck", "Charon", "Kore", "Fenrir"],
+        default="Aoede",
+        help="Gemini 3.8 Live prebuilt voice persona name (ensures consistent voice output)",
+    )
+    parser.add_argument(
         "--thinking-level",
         choices=["LOW", "MEDIUM", "HIGH"],
         default="LOW",
@@ -800,6 +905,7 @@ async def main():
         save_dir=args.save_dir,
         model=args.model,
         audio_model=args.audio_model,
+        voice_name=args.voice_name,
         thinking_level=args.thinking_level,
         max_retained_frames=args.max_retained_frames,
         hazard=args.hazard,

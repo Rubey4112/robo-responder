@@ -50,9 +50,12 @@ graph TD
 ### 1. Dual-Agent State Machine (`IDLE` $\to$ `TRIAGE` $\to$ `EVACUATION`)
 - **`IDLE` (Standby Mode)**: The robot rests safely in standby. Motors are unpowered. The live camera HUD displays standby telemetry.
 - **`TRIAGE` Mode**: Triggered by pressing `[E]` or `[SPACE]` in the GUI (or `[ENTER]` in console).
-  - Gemini 3.8 Live vocalizes through the speaker: *"Emergency alert detected. What is the emergency? Please state if there is a fire, an earthquake, or a tornado."*
-  - The human responds (voice or keys `[1]` Fire, `[2]` Earthquake, `[3]` Tornado).
-  - Gemini 3.8 Live responds with the tailored evacuation directive and sets the active protocol.
+  - Gemini 3.8 Live vocalizes through the speaker: *"Emergency alert detected. What is the emergency? Fire, earthquake, or tornado?"*
+  - **Live Microphone Speech Recognition**: After the robot finishes speaking, the microphone activates for a 4-second listening window with a live HUD countdown (`LISTENING TO VOICE (4.0s)...`).
+  - Evacuees simply speak their emergency aloud (e.g. *"Earthquake!"*, *"There is an earthquake!"*, *"Fire!"*, *"Tornado!"*).
+  - The captured audio is classified by Gemini, transcribing the speech, confirming the hazard, and printing the transcript to the terminal.
+  - Evacuees can also press keys `[1]` Fire, `[2]` Earthquake, `[3]` Tornado in the video window as an instant manual override.
+  - Gemini 3.8 Live responds with the tailored evacuation directive using a **consistent voice persona** (`--voice-name Aoede` by default, or `Puck`, `Charon`, `Kore`, `Fenrir`).
 - **`EVACUATION` Mode**: Gemini Robotics ER 2 takes optical control, evaluating frames and driving the rover according to the active hazard rules.
 
 ### 2. Specialized Hazard Protocols
@@ -94,15 +97,18 @@ python src/main.py --hazard earthquake --no-idle
 # 5. Tornado Protocol Demo:
 python src/main.py --hazard tornado --no-idle
 
-# 6. Specify External USB Camera (e.g. index 1) or limit to 5 turns:
+# 6. Select custom prebuilt voice persona (Aoede, Puck, Charon, Kore, Fenrir):
+python src/main.py --voice-name Aoede
+
+# 7. Specify External USB Camera (e.g. index 1) or limit to 5 turns:
 python src/main.py --camera 1 --turns 5
 ```
 
 ### Stage & Demo Keyboard Controls
 - **`[E]`**: Trigger emergency triage from standby.
-- **`[1]` / `[2]` / `[3]`**: Select Fire, Earthquake, or Tornado during triage.
+- **`[1]` / `[2]` / `[3]`**: Select Fire, Earthquake, or Tornado during triage (or speak into the mic).
 - **`[SPACE]`**: Advance turn in step mode (or trigger triage in standby).
-- **`[S]`**: Immediate emergency hardware motor cutoff.
+- **`[S]`**: **Demo Reset Switch**: Instantly stops the active emergency, halts all robot motors, stops audio/mic, and parks the robot back in `IDLE` standby ready for the next test.
 - **`[Q]` / `[ESC]`**: Clean system shutdown (stops motors and releases camera/serial ports).
 
 ---
