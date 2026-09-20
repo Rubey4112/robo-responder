@@ -1,98 +1,155 @@
 flowchart TB
     %% -----------------------------------------------------------
-    %% STYLING AND CONFIGURATION
+    %% STYLING AND COLOR CONFIGURATION
     %% -----------------------------------------------------------
     classDef hardware fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b;
     classDef vision fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#1b5e20;
     classDef cloud fill:#ede7f6,stroke:#7b1fa2,stroke-width:2px,color:#4a148c;
     classDef embedded fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100;
+    classDef audio fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#880e4f;
+    classDef host fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#4a148c;
     classDef bus fill:#eceff1,stroke:#455a64,stroke-width:2px,stroke-dasharray: 5 5,color:#263238;
 
     %% -----------------------------------------------------------
-    %% ENVIRONMENT & PERCEPTION INPUT
+    %% 1. PHYSICAL ENVIRONMENT & EVACUEES
     %% -----------------------------------------------------------
-    subgraph Env ["Emergency Environment"]
-        PhysicalSpace["Exit Signs, Doors, Obstacles, Hazards (Fire/Debris)"]
+    subgraph Env ["1. Physical Space & Human Evacuees"]
+        PhysicalSpace["Emergency Environment<br/><i>(Exit Signs, Doors, Structural Tables, Windows, Fire/Smoke)</i>"]
+        Evacuees["Human Evacuees & Demo Judges<br/><i>(Listening for Directives & Following Rover)</i>"]
     end
 
-    Cam["USB-C Webcam<br/><i>(1080p Video Stream)</i>"]:::hardware
+    %% -----------------------------------------------------------
+    %% 2. HARDWARE PERIPHERALS & I/O
+    %% -----------------------------------------------------------
+    subgraph Peripherals ["2. Perception & Audio I/O Peripherals"]
+        Cam["USB Optical Webcam<br/><i>(OpenCV Device 0 / DirectShow BGR Stream)</i>"]:::hardware
+        Mic["Microphone Input<br/><i>(NexiGo N660P / 16kHz PCM Stream)</i>"]:::audio
+        Speaker["Speaker Output<br/><i>(JBL Go 3 Bluetooth / 24kHz PCM Playback)</i>"]:::audio
+    end
+
     PhysicalSpace -.->|"Optical Light / Scene"| Cam
+    Evacuees -.->|"Spoken Emergency Response"| Mic
+    Speaker -.->|"Loud Spoken Guidance & 'Follow Me!'"| Evacuees
 
     %% -----------------------------------------------------------
-    %% RASPBERRY PI 4 HOST (EDGE COMPUTING)
+    %% 3. HOST ORCHESTRATION APPLICATION (src/main.py)
     %% -----------------------------------------------------------
-    subgraph RPi ["Raspberry Pi 4 Model B (Host SBC - Python 3.11)"]
-        subgraph CVSys ["1. Computer Vision & Streaming System"]
-            OpenCVMod["OpenCV Capture Module<br/><i>(Frame Capture & Preprocessing)</i>"]:::vision
-            StreamPipeline["Vision Stream Pipeline<br/><i>(Decoupled 30 FPS / 1 FPS Engine)</i>"]:::vision
-            WebSocketServer["Vision WebSocket Server<br/><code>ws://0.0.0.0:8765</code><br/><i>(Video & Telemetry Broadcast)</i>"]:::vision
-            OpenCVMod -->|"30 FPS Camera Frames"| StreamPipeline
-            StreamPipeline -->|"Live Video Broadcast"| WebSocketServer
+    subgraph HostApp ["3. Roboguide Host Application (src/main.py)"]
+        subgraph GUI ["OpenCV Real-Time Interface"]
+            HUD["Broadcast-Quality OpenCV HUD<br/><i>(State, Active Hazard, Motor Action, Voice Text, Crosshair)</i>"]:::vision
+            ResetKey["Judge Reset Switch: [S] Key<br/><i>(Emergency Motor Cut, Flushes Mic/Audio, Parks to Standby)</i>"]:::host
+            TriggerKey["Demo Trigger: [E] / [SPACE] Keys<br/><i>(Activates Triage or Steps Execution)</i>"]:::host
         end
 
-        subgraph HostAgent ["Host Orchestration & Bridge"]
-            AgentLoop["Roboguide Agent Controller<br/><i>(Coordinates Vision, LLM & Robot)</i>"]
-            SerialComm["USB Serial Driver / Interface<br/><i>(Baudrate 115200)</i>"]
-            AgentLoop -->|"Formatted Movement Directives"| SerialComm
+        subgraph CoreEngine ["State Machine & Shared Context Hub"]
+            StateMachine["Dual-Agent Coordinator & State Machine<br/><b>IDLE (Standby) &rarr; TRIAGE (Audio) &rarr; EVACUATION (Spatial)</b>"]:::host
+            MotionCounter["Motion Counter & Periodic Voice Trigger<br/><i>(Prompts Reassuring Spoken Update Every 3-4 Moves)</i>"]:::host
+        end
+
+        subgraph AudioSubsys ["Live Audio Session (src/audio/live_audio.py)"]
+            AudioBridge["RoboguideLiveAudioSession<br/><i>(sounddevice 24kHz Playback + pyttsx3 Offline Fallback)</i>"]:::audio
+            MicRecorder["Non-Blocking 16kHz Audio Recorder<br/><i>(4-Second Recording Buffer)</i>"]:::audio
+        end
+
+        subgraph DrivingSubsys ["Driving Tools & Serial Bridge (src/agent/driving_functions.py)"]
+            Bridge["AsyncRobotBridge Singleton<br/><i>(Auto-COM Detection, Keepalive Pulses, Preemption)</i>"]:::host
+            ToolsModule["Async Driving Tool Library<br/><code>move_forward, steer_slight, turn_hard, stop_robot</code>"]:::host
         end
     end
 
-    Cam -->|"Raw Video Stream (USB)"| OpenCVMod
-    StreamPipeline -->|"Scene Frames & Directives"| AgentLoop
+    Cam -->|"Raw BGR Frames"| HUD
+    HUD -->|"Fresh Frames (Flush Buffers = 4)"| StateMachine
+    Mic -->|"Microphone PCM Stream"| MicRecorder
+    MicRecorder --> AudioBridge
+    AudioBridge -->|"24kHz Synthesized Speech"| Speaker
+
+    TriggerKey -->|"Triggers Triage"| StateMachine
+    ResetKey -.->|"Immediate Abort & Park"| StateMachine
+    ResetKey -.->|"Immediate STOP (0.0s)"| Bridge
+    ResetKey -.->|"Stop Audio Playback"| AudioBridge
+
+    StateMachine --> MotionCounter
+    MotionCounter -->|"Every 3-4 Moves"| AudioBridge
 
     %% -----------------------------------------------------------
-    %% REMOTE MONITORS & WEB DASHBOARD
+    %% 4. CLOUD INTELLIGENCE: DUAL-AGENT ARCHITECTURE
     %% -----------------------------------------------------------
-    RemoteClient["Remote Dashboard / Web Client<br/><i>(HTML5 Canvas / Live Telemetry)</i>"]:::hardware
-    WebSocketServer <-->|"WebSocket (JSON / Base64 JPEG Frames)"| RemoteClient
+    subgraph CloudIntelligence ["4. Dual-Agent Cloud Intelligence (Google GenAI SDK)"]
+        subgraph VoiceAgent ["Agent A: Gemini 3.8 Live (Audio & Evacuee Guidance)"]
+            LiveAudioModel["gemini-3.8-live<br/><i>(Aoede Voice Persona / Consistent Persona)</i>"]:::cloud
+            AudioClassifier["gemini-2.5-flash Audio Triage<br/><i>(Transcribes Mic Audio & Classifies Hazard)</i>"]:::cloud
+            SpokenDirectives["Conversational Triage Question & Directives<br/><b>'Attention everyone, follow me!'</b>"]:::cloud
 
-    %% -----------------------------------------------------------
-    %% CLOUD INTELLIGENCE (GEMINI ROBOTICS ER-2 LIVE API)
-    %% -----------------------------------------------------------
-    subgraph CloudSystem ["2. LLM System (Cloud Embodied Reasoning)"]
-        GeminiAPI["Google Gemini Live API<br/><b>gemini-robotics-er-2-streaming-preview</b>"]:::cloud
-        PathPlanner["Emergency Path Planning & Spatial Reasoning"]:::cloud
-        FunctionCallEngine["Blocking Function Calling Engine<br/><i>(navigate_robot, emergency_stop, report_status)</i>"]:::cloud
+            AudioClassifier -->|"Confirmed Hazard: fire / earthquake / tornado"| SpokenDirectives
+            LiveAudioModel --> SpokenDirectives
+        end
 
-        GeminiAPI --> PathPlanner
-        PathPlanner --> FunctionCallEngine
+        subgraph SpatialAgent ["Agent B: Gemini Robotics ER 2 (Spatial Reasoning & Driving)"]
+            SpatialModel["gemini-robotics-er-2-preview<br/><i>(Robotics Spatial Foundation Model)</i>"]:::cloud
+            
+            subgraph MultiHazardProtocols ["Multi-Hazard Protocols"]
+                FireProto["FIRE: Exit Signage & Clear Corridor Navigation"]:::cloud
+                QuakeProto["EARTHQUAKE: Sturdy Desks/Tables Cover & 'Drop, Cover, Hold'"]:::cloud
+                TornadoProto["TORNADO: Windowless Interior Rooms & Debris Avoidance"]:::cloud
+            end
+
+            SpatialMemory["Spatial Multi-Turn Memory & Pruning<br/><i>(Retains Last 4 Frames, Prunes Older Images to Save Tokens)</i>"]:::cloud
+            AFCEngine["Automatic Function Calling (AFC)<br/><i>(Direct Python Tool Invocation)</i>"]:::cloud
+
+            SpatialModel --> MultiHazardProtocols
+            MultiHazardProtocols --> SpatialMemory
+            SpatialMemory --> AFCEngine
+        end
     end
 
-    StreamPipeline <-->|"Bidirectional Live WebSocket<br/>1 FPS Video Blobs & Heartbeat Prompts"| GeminiAPI
-    FunctionCallEngine -->|"Blocking Action Directives"| StreamPipeline
+    AudioBridge <-->|"WAV Audio Part & Triage Prompt"| AudioClassifier
+    AudioBridge <-->|"Bidirectional Live Audio Streaming"| LiveAudioModel
+    SpokenDirectives -->|"Vocal Directive Before Movement"| AudioBridge
+
+    StateMachine -->|"Active Hazard Protocol"| MultiHazardProtocols
+    StateMachine -->|"Camera Frame & Hazard Prompt"| SpatialMemory
+    AFCEngine -->|"Asynchronous Tool Invocations"| ToolsModule
+    ToolsModule -->|"Dispatches Timed Motion Commands"| Bridge
 
     %% -----------------------------------------------------------
-    %% COMMUNICATION BUS
+    %% 5. COMMUNICATION BUS
     %% -----------------------------------------------------------
-    subgraph CommBus ["Communication Bus"]
-        USBSerial["Bi-directional USB Serial Connection<br/><i>(Host RPi 4 ⇄ RP2040 Pi Pico)</i>"]:::bus
+    subgraph CommBus ["5. Communication Bus"]
+        USBSerial["USB-Serial CDC Connection<br/><i>(COM4 @ 115200 Baud / VID 0x1B4F SparkFun)</i>"]:::bus
     end
 
-    SerialComm <-->|"Serial Data Stream<br/>(Directives / Telemetry / Firmware Updates)"| USBSerial
+    Bridge <-->|"Timed Keepalive Pulses (0.5s) & Directives"| USBSerial
+    USBSerial -->|"[ROBOT ACK] Telemetry Line"| Bridge
+    Bridge -->|"Real-time Action Telemetry"| HUD
 
     %% -----------------------------------------------------------
-    %% ROBOT CONTROL SYSTEM (XRP ROBOTICS KIT)
+    %% 6. XRP ROBOT CONTROL SYSTEM (RP2350 PICO)
     %% -----------------------------------------------------------
-    subgraph RobotSystem ["3. Robot Control System (XRP Kit - Pi Pico)"]
-        subgraph Firmware ["Pi Pico MicroPython Firmware"]
-            SerialListener["Non-blocking Serial Listener<br/><code>sys.stdin / select</code>"]:::embedded
-            Watchdog["Safety Watchdog Timer<br/><i>(1.5s Auto-Stop Timeout)</i>"]:::embedded
-            CommandExec["Command Dispatcher<br/><code>execute_command()</code>"]:::embedded
-            XRPLibCore["XRPLib Driver Framework<br/><code>DifferentialDrive</code>"]:::embedded
+    subgraph RobotSystem ["6. XRP Evacuation Rover (RP2350 MicroPython)"]
+        subgraph Firmware ["MicroPython Navigation Firmware (src/robot/firmware.py)"]
+            SerialListener["Non-Blocking Stdin Poller<br/><code>sys.stdin / select.poll(0)</code>"]:::embedded
+            SafetyWatchdog["Hardware Safety Watchdog<br/><i>(1.5s Auto-Stop if Pulse Missed)</i>"]:::embedded
+            CommandDispatcher["Command Dispatcher<br/><code>execute_command()</code>"]:::embedded
+            ClosedLoopSpeed["XRPLib DifferentialDrive<br/><b>set_speed(cm/s) Closed-Loop PID Control</b><br/><i>BASE_SPEED: 25 cm/s | TURN_SPEED: 18 cm/s</i>"]:::embedded
+            EncoderTelemetry["Real-Time Encoder Telemetry<br/><code>(L=...cm, R=...cm)</code>"]:::embedded
 
-            SerialListener -->|"Parsed Command String"| CommandExec
-            Watchdog -.->|"Safety Trigger"| CommandExec
-            CommandExec -->|"Motor Effort / Speed"| XRPLibCore
+            SerialListener -->|"Command String (FORWARD, HARD_LEFT, STOP)"| CommandDispatcher
+            SafetyWatchdog -.->|"Watchdog Expired"| CommandDispatcher
+            CommandDispatcher -->|"Closed-Loop Speed (cm/s)"| ClosedLoopSpeed
+            ClosedLoopSpeed --> EncoderTelemetry
+            EncoderTelemetry -->|"XRP Received Command: ... (L=...cm, R=...cm)"| SerialListener
         end
 
         subgraph HardwareActuators ["Hardware & Actuators"]
-            Motors["Dual Geared DC Motors<br/><i>(Left & Right Differential Drive)</i>"]:::hardware
-            Sensors["XRP Onboard Sensors<br/><i>(Encoders, Ultrasonic, Line Trackers)</i>"]:::hardware
+            Motors["Dual Geared DC Motors<br/><i>(Differential Wheel Drive)</i>"]:::hardware
+            Encoders["Quadrature Motor Encoders<br/><i>(High-Precision Closed-Loop Tracking)</i>"]:::hardware
+            RGBStatus["RGB Status NeoPixel<br/><i>(Blue LED = Navigation Ready)</i>"]:::hardware
         end
 
-        XRPLibCore -->|"PWM / Effort Control"| Motors
-        Sensors -.->|"Sensor Readings & Diagnostics"| SerialListener
+        ClosedLoopSpeed -->|"Closed-Loop Motor Drive"| Motors
+        Motors --> Encoders
+        Encoders -.->|"Encoder Feedback Counts"| ClosedLoopSpeed
     end
 
-    USBSerial <-->|"USB stdin / stdout"| SerialListener
-    Motors -.->|"Guides Evacuees to Safety"| PhysicalSpace
+    USBSerial <-->|"ASCII Commands & Telemetry"| SerialListener
+    Motors -.->|"Drives Across Floor to Guide Evacuees"| PhysicalSpace

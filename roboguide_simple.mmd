@@ -1,0 +1,48 @@
+flowchart TB
+    %% -----------------------------------------------------------
+    %% ROBOGUIDE: HIGH-LEVEL SYSTEM ARCHITECTURE
+    %% -----------------------------------------------------------
+    classDef human fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100;
+    classDef host fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#4a148c;
+    classDef gemini fill:#ede7f6,stroke:#512da8,stroke-width:2px,color:#311b92;
+    classDef hardware fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b;
+
+    Human["Human Evacuees & Judges<br/><i>(Voice Interaction & Guided Evacuation)</i>"]:::human
+
+    subgraph Peripherals ["Perception & Audio Hardware"]
+        Mic["Microphone Input"]:::hardware
+        Speaker["Bluetooth Speaker (JBL Go 3)"]:::hardware
+        Camera["USB Webcam (Video Feed)"]:::hardware
+    end
+
+    Human -->|"Spoken Emergency ('Earthquake!', 'Fire!', 'Tornado!')"| Mic
+    Speaker -->|"Spoken Guidance ('Attention everyone, follow me!')"| Human
+
+    subgraph Host ["Roboguide Host Application (src/main.py)"]
+        Coordinator["State Machine & Shared Context Hub<br/><b>IDLE (Standby) &rarr; TRIAGE (Audio) &rarr; EVACUATION (Spatial)</b>"]:::host
+        HUD["Live OpenCV HUD & Reset Controls<br/><i>(Visual Overlay, Telemetry, [S] Reset Key)</i>"]:::host
+    end
+
+    Mic -->|"Audio Samples"| Coordinator
+    Camera -->|"Fresh Video Frames"| Coordinator
+    Coordinator -->|"Synthesized Speech"| Speaker
+    Coordinator -->|"Real-Time Status"| HUD
+
+    subgraph CloudBrain ["Dual-Agent Cloud Brain (Google Gemini)"]
+        VoiceAgent["Gemini 3.8 Live (Voice Agent)<br/><b>Audio Triage & Human Guidance</b><br/><i>- Listens to evacuee hazard declaration<br/>- Speaks 'Follow me!' before rover drives<br/>- Broadcasts calming progress every 3-4 moves</i>"]:::gemini
+
+        SpatialAgent["Gemini Robotics ER 2 (Spatial Agent)<br/><b>Camera Vision & Motion Planning</b><br/><i>- Evaluates scene geometry & obstacles<br/>- Multi-hazard protocols (Fire / Quake / Storm)<br/>- Issues motor tool calls (move, steer, turn)</i>"]:::gemini
+    end
+
+    Coordinator <-->|"Bidirectional Audio & Hazard State"| VoiceAgent
+    Coordinator <-->|"Camera Frames & Tool Invocations"| SpatialAgent
+
+    subgraph PhysicalRover ["XRP Autonomous Evacuation Rover"]
+        Controller["RP2350 Microcontroller (Firmware)<br/><i>(Closed-loop speed control & 1.5s watchdog)</i>"]:::hardware
+        Motors["Dual Drive Motors & Encoders<br/><i>(Differential steering across floor)</i>"]:::hardware
+    end
+
+    Coordinator -->|"Serial Commands on COM4 (FORWARD, TURN, STOP)"| Controller
+    Controller -->|"Speed Control (cm/s)"| Motors
+    Controller -->|"[ROBOT ACK] Encoder Telemetry"| Coordinator
+    Motors -.->|"Physically Drives & Leads Evacuees to Safety"| Human
