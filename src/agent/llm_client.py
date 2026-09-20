@@ -490,18 +490,45 @@ class RoboguideClient:
         frame: Union[np.ndarray, bytes],
         frame_index: int = 1,
         instruction: str = "Analyze the current view. Compare your spatial position against previous frames and your previous motor movements. Identify obstacles or exit signs, and execute the appropriate driving action.",
+        max_retained_frames: int = 4,
     ) -> str:
         """Sends an incremental camera frame to an ongoing spatial chat session.
+
+        To protect against free tier token limits and avoid cumulative payload bloat,
+        prior image frames in chat history older than `max_retained_frames` are automatically
+        pruned and replaced with compact text markers. This preserves 100% of the
+        conversational reasoning and action history while eliminating redundant raw image tokens.
 
         Args:
             chat_session: An active AsyncChat session created via start_spatial_chat().
             frame: OpenCV BGR frame (np.ndarray) or raw JPEG image bytes.
             frame_index: Sequential number of the frame (e.g. 1, 2, 3).
             instruction: Specific guidance or prompt accompanying the frame.
+            max_retained_frames: Number of historical visual images to keep in API payload (default: 4).
+                Keeps the last 4 frames visually active for multi-step spatial awareness.
 
         Returns:
             The model's natural language reasoning text after automatic tool execution.
         """
+        # 1. Prune older raw image payloads to keep token usage minimal and predictable
+        if max_retained_frames >= 0 and hasattr(chat_session, "_curated_history"):
+            image_contents = [
+                c for c in chat_session._curated_history
+                if c.role == "user" and any(hasattr(p, "inline_data") and p.inline_data for p in (c.parts or []))
+            ]
+            keep_count = max(0, max_retained_frames - 1)
+            prune_targets = image_contents[:-keep_count] if keep_count > 0 else image_contents
+
+            for content in prune_targets:
+                new_parts = []
+                for part in (content.parts or []):
+                    if hasattr(part, "inline_data") and part.inline_data:
+                        new_parts.append(types.Part.from_text(text="[Archived Camera Frame - action completed]"))
+                    else:
+                        new_parts.append(part)
+                content.parts = new_parts
+
+        # 2. Encode current frame to JPEG if necessary
         if isinstance(frame, np.ndarray):
             success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if not success:

@@ -317,6 +317,7 @@ class RoboguideDemoApp:
         save_dir: str = "captures/demo",
         model: str = "gemini-robotics-er-2-preview",
         thinking_level: str = "LOW",
+        max_retained_frames: int = 4,
     ):
         self.camera_index = camera_index
         self.mode = mode.lower()
@@ -326,6 +327,7 @@ class RoboguideDemoApp:
         self.save_dir = Path(save_dir)
         self.model = model
         self.thinking_level = thinking_level
+        self.max_retained_frames = max_retained_frames
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.bridge = get_robot_bridge()
@@ -478,6 +480,7 @@ class RoboguideDemoApp:
                 frame=frame,
                 frame_index=turn_idx,
                 instruction=instruction,
+                max_retained_frames=self.max_retained_frames,
             )
         except Exception as e:
             print(f"{C_RED}[ERROR] Gemini API inference exception: {e}{C_RESET}")
@@ -626,6 +629,12 @@ def parse_arguments() -> argparse.Namespace:
         default="LOW",
         help="Gemini ER 2 thinking depth level",
     )
+    parser.add_argument(
+        "--max-retained-frames",
+        type=int,
+        default=4,
+        help="Number of historical visual image payloads to retain in Gemini chat history (default: 4). Older image bytes are automatically pruned to save free tier tokens.",
+    )
     return parser.parse_args()
 
 
@@ -640,6 +649,7 @@ async def main():
         save_dir=args.save_dir,
         model=args.model,
         thinking_level=args.thinking_level,
+        max_retained_frames=args.max_retained_frames,
     )
 
     initialized = await app.initialize()
